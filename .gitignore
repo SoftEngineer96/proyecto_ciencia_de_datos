@@ -1,0 +1,28 @@
+# Entorno virtual y Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+requirements.lock.txt
+
+# Configuración local (nunca versionar)
+.env
+
+# Datos y modelos (capas medallion)
+data/
+models/
+*.parquet
+
+# Herramientas
+.pytest_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# Sistema
+.DS_Store
+Thumbs.db
+
+# Artefactos de empaquetado
+*.egg-info/
+build/
+dist/
