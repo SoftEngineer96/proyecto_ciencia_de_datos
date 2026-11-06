@@ -1,4 +1,5 @@
 import importlib
+import json
 
 import pandas as pd
 
@@ -38,3 +39,29 @@ def test_bronze_is_an_unmodified_copy(tmp_path):
     ing.run(source=source, n_labeled=3, out_dir=out)
     saved = pd.read_csv(out / "titanic_labeled.csv")
     pd.testing.assert_frame_equal(saved, original.iloc[:3].reset_index(drop=True))
+
+
+def test_quality_report_counts_nulls():
+    df = pd.DataFrame({"a": [1, None, 3], "b": ["x", "y", None]})
+    rep = ing.quality_report(df)
+    assert rep["n_rows"] == 3 and rep["n_cols"] == 2
+    assert rep["nulls"] == {"a": 1, "b": 1}
+    assert round(rep["null_pct"]["a"], 1) == 33.3
+
+
+def test_quality_report_is_json_serializable():
+    """pandas devuelve int64 de NumPy; json.dumps no lo serializa."""
+    import json as _json
+
+    df = pd.DataFrame({"a": [1, None, 3]})
+    _json.dumps(ing.quality_report(df))
+
+
+def test_run_writes_quality_report(tmp_path):
+    source, _ = _fake_source(tmp_path)
+    out = tmp_path / "bronze"
+    ing.run(source=source, n_labeled=3, out_dir=out)
+    rep = json.loads((out / "_quality_report.json").read_text(encoding="utf-8"))
+    # El reporte describe el conjunto etiquetado, no la fuente completa.
+    assert rep["n_rows"] == 3
+    assert rep["nulls"]["Survived"] == 0
