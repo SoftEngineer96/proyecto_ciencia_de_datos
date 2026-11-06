@@ -1,0 +1,37 @@
+# Configuración propia del linter. NO se toca pyproject.toml porque ese archivo
+# es del profesor (viene de upstream) y editarlo crearía conflictos al hacer
+# 'git merge upstream/main'.
+#
+# 'extend' hereda lo que el profesor configure en pyproject.toml (hoy
+# line-length = 100) y solo añade lo de abajo. Así, si él cambia su
+# configuración, el cambio nos llega; este archivo no la reemplaza.
+extend = "pyproject.toml"
+
+[lint.per-file-ignores]
+# N999: "nombre de módulo inválido". Los módulos de etapa empiezan por dígito
+# (00_ingestion, 01_data_engineering...) porque la guía usa el número para
+# indicar el orden de ejecución, y job.py los carga con importlib justamente
+# porque 'import' no admite ese nombre. Es una decisión de diseño del taller,
+# no un descuido: se silencia la regla en lugar de renombrar los archivos.
+"flows/*" = ["N999"]
+
+# Los dos silencios siguientes son sobre código que viene LITERAL de
+# docs/GUIA.md (Paso 0.4 y Paso 0.5, "ejemplos resueltos" del profesor).
+# Se silencia la regla en vez de editar su código: así 'make lint' pasa limpio
+# sin desviarse del material del taller ni arriesgar conflictos si el profesor
+# llega a publicar estos archivos en upstream.
+
+# UP017: el ejemplo usa 'datetime.timezone.utc'; la forma moderna es
+# 'datetime.UTC' (Python 3.11+). Equivalentes en comportamiento.
+"flows/00_ingestion.py" = ["UP017"]
+
+# I001: el ejemplo no deja la línea en blanco que isort espera tras los imports.
+# Puramente cosmético.
+"flows/common/logging.py" = ["I001"]
+
+# F401 ("importado y sin usar") e I001 ("imports desordenados") en los cuadernos:
+# la celda de arranque viene tal cual de docs/GUIA.md e importa de antemano todo
+# lo que se usará en partes posteriores (numpy en la Parte 2, scipy.stats en la
+# Parte 6, SILVER y GOLD cuando existan esas capas). Reordenarla o recortarla
+# sería desviarse del material del profesor.
+"notebooks/*" = ["F401", "I001"]
