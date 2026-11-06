@@ -10,7 +10,7 @@ log = get_logger(__name__)
 # se cargan con importlib a partir de su ruta de paquete.
 STAGES = {
     "ingestion": "flows.00_ingestion",
-    # "silver": "flows.01_data_engineering",
+    "silver": "flows.01_data_engineering",
     # "gold": "flows.03_aggregation",
     # "train": "flows.05_ml_models",
 }
