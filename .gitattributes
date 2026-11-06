@@ -1,0 +1,21 @@
+# Los cuadernos se versionan SIN salidas.
+#
+# Por qué: un .ipynb guarda las salidas dentro del propio JSON (tablas, imágenes
+# PNG en base64). Si se versionan, cada reejecución produce un diff enorme e
+# ilegible y el repositorio crece sin control. La guía del taller lo pide
+# explícitamente ("Limpia las salidas antes del commit (nbstripout)").
+#
+# Cómo funciona: 'filter=nbstripout' le dice a Git que pase el archivo por el
+# filtro llamado 'nbstripout' al preparar el commit. El filtro NO vive aquí:
+# se define en .git/config, que no se versiona. Por eso cada quien debe
+# ejecutar una vez, tras clonar:
+#
+#     nbstripout --install
+#
+# Si alguien no lo instala, Git deja pasar el archivo sin tocarlo (no falla,
+# pero vuelve a commitear las salidas).
+*.ipynb filter=nbstripout
+
+# 'diff=ipynb' hace que 'git diff' muestre solo el código de las celdas en
+# lugar del JSON completo. Requiere el mismo 'nbstripout --install'.
+*.ipynb diff=ipynb
