@@ -186,7 +186,12 @@ pyrightconfig.json
 
 data/*
 models/*
+
+# reports/: los informes escritos SON entregables calificables (ver "Definicion
+# de terminado" en docs/GUIA.md), asi que se versionan. Lo que se genere
+# automaticamente dentro de reports/ (figuras, HTML, CSV) queda fuera.
 reports/*
+!reports/*.md
 
 
 # End of https://www.toptal.com/developers/gitignore/api/python,jupyternotebooks
