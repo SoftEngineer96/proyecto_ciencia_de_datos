@@ -186,3 +186,88 @@ tratan formalmente en el Paso 38.
 `Embarked` (H5). Si `Fare` predice la supervivencia, buena parte de ese poder
 es `Pclass` disfrazada.
 
+---
+
+## H11. Imputar la edad reduce artificialmente la dispersión (Paso 22, Reto 22.1)
+
+La desviación estándar de `Age` cae de **14.53 a 13.01** (un 10.5 %) al imputar
+177 valores con el promedio de su género.
+
+La causa es mecánica: esos 177 pasajeros reciben uno de solo dos números,
+ambos en el centro de la distribución. La desviación estándar mide el
+alejamiento respecto de la media, y añadir puntos en la media suma cero
+alejamiento mientras aumenta el total de casos.
+
+En el histograma aparecen dos barras artificiales donde antes no había nada.
+
+**Consecuencia.** La columna imputada parece más precisa de lo que los datos
+son. Todo cálculo sensible a la dispersión —intervalos de confianza, errores
+estándar, pruebas de hipótesis— sale artificialmente estrecho si se hace sobre
+`Age` en lugar de `AgeOriginal`. Por eso Silver conserva las dos columnas y
+marca las filas tocadas en `AgeImputada`.
+
+## H12. Fundir `Master` con `Mr` es defendible, pero solo por `Person`
+
+`consolidate_titles()` mapea `Master` (niño varón) a `Mr`, mezclando niños con
+adultos en la misma categoría de título.
+
+La decisión se sostiene **únicamente porque `Person` ya separa a los menores de
+16 años**: la información sobre la edad no se pierde, solo vive en otra
+columna. Si `Person` no existiera, esta fusión borraría una distinción que el
+análisis de supervivencia demostró decisiva (los niños de segunda clase
+sobrevivieron al 100 %, los hombres de segunda al 8.1 %).
+
+**Riesgo a vigilar.** Al modelar, `NTitulo` y `Person` codifican información
+parcialmente redundante. Conviene revisar su correlación antes de incluir las
+dos.
+
+## H13. `NTitulo` duplica a `NSex`, y `NCabin` duplica a `Pclass` (Paso 27)
+
+La matriz de correlación revela dos redundancias fuertes entre predictores:
+
+- **`NSex` ↔ `NTitulo` = −0.80.** `Mr` es hombre, `Mrs` y `Miss` son mujeres:
+  el título codifica el sexo casi por completo. Esto confirma con un número el
+  riesgo anotado en H12. `NTitulo` aparece como segundo mejor predictor (0.43)
+  sin aportar información nueva.
+- **`Pclass` ↔ `NCabin` = 0.75.** Como `NCabin` vale 8 para cabina desconocida
+  y desconocerla es casi sinónimo de tercera clase (H1), su correlación de
+  −0.30 con la supervivencia es `Pclass` filtrándose.
+
+**Consecuencia para el modelado.** Incluir los cuatro predictores metería
+información repetida. Hay que elegir entre cada par o usar un método que
+tolere la colinealidad.
+
+## H14. Una correlación cercana a cero no significa ausencia de relación (Paso 27)
+
+`Age` correlaciona −0.08 con `Survived`: prácticamente nada. Pero el Paso 19
+mostró que la relación existe y es fuerte — los varones del primer intervalo
+de edad sobrevivieron en torno al 52 % y los del tramo de los 20 al 14 %.
+
+La correlación de Pearson mide solo relaciones **lineales**. El patrón de la
+edad es alto en la infancia, cae en la adultez y se aplana: no es una recta, y
+los tramos se cancelan entre sí.
+
+**Consecuencia.** Descartar variables por su correlación baja es un error
+frecuente y costoso. `Age` habría quedado fuera del modelo pese a ser
+informativa.
+
+## H15. Viajar acompañado casi duplica la supervivencia (Paso 28)
+
+| | Tasa | Sobrevivieron | Total |
+|---|---|---|---|
+| Solo | 0.304 | 163 | 537 |
+| Con familia | 0.506 | 179 | 354 |
+
+**Hipótesis a verificar, no hallazgo.** Mujeres y niños viajaban acompañados
+con más frecuencia que los hombres solos, así que el efecto puede ser
+composición y no causa. Debe estratificarse por sexo y clase en la Parte 9.
+
+## H16. Las estadísticas de edad por supervivencia usan la edad imputada (Paso 28)
+
+`age_by_survival` reporta desviaciones estándar de 12.46 y 13.77, por debajo
+del 14.53 de los datos reales (H11): están calculadas sobre `Age` imputada.
+La diferencia de medias entre grupos es de solo 2.15 años, coherente con la
+correlación casi nula de H14.
+
+Para un informe riguroso, estas estadísticas deberían recalcularse sobre
+`AgeOriginal`, restringidas a los 714 pasajeros con edad conocida.
