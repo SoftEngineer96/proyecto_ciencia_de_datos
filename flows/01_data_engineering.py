@@ -162,28 +162,100 @@ def add_survivor_label(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 def add_title(df: pd.DataFrame) -> pd.DataFrame:
-    """Paso 25: TTitulo, extraído de Name."""
-    return df  # TODO Paso 25
+    """Paso 25: TTitulo, extraído de Name con una expresión regular.
+
+    Los nombres tienen la forma 'Braund, Mr. Owen Harris': el título va entre
+    la coma y el primer punto. El patrón r',\\s*([^.]+)\\.' busca una coma,
+    espacios opcionales, y captura todo lo que no sea un punto hasta el punto.
+    """
+    out = df.copy()
+    out["TTitulo"] = out["Name"].str.extract(r",\s*([^.]+)\.", expand=False).str.strip()
+    return out
 
 
 def consolidate_titles(df: pd.DataFrame) -> pd.DataFrame:
-    """Paso 26: agrupa títulos raros con TITLE_MAP y MAIN_TITLES; el resto, 'Otro'."""
-    return df  # TODO Paso 26
+    """Paso 26: agrupa los títulos raros; lo que no esté en MAIN_TITLES pasa a 'Otro'.
+
+    Títulos como 'Jonkheer' o 'the Countess' dejan grupos de una o dos
+    personas: inútiles para estadística y ruido para el modelo. TITLE_MAP
+    los funde con su equivalente común y el resto cae en 'Otro'.
+
+    Decisión discutible: 'Master' (niño varón) se funde con 'Mr', mezclando
+    niños con adultos. Se acepta porque la columna Person ya distingue a los
+    menores de 16 por separado, así que esa información no se pierde.
+    """
+    out = df.copy()
+    out["TTitulo"] = out["TTitulo"].replace(TITLE_MAP)
+    out["TTitulo"] = out["TTitulo"].where(out["TTitulo"].isin(MAIN_TITLES), "Otro")
+    return out
 
 
 def impute_embarked(df: pd.DataFrame) -> pd.DataFrame:
-    """Paso 21: imputa los 2 faltantes de Embarked."""
-    return df  # TODO Paso 21
+    """Paso 21: rellena los faltantes de Embarked con la moda.
+
+    Son solo 2 de 891 (0.22 %). Con una proporción tan pequeña, la elección
+    entre eliminar las filas o imputar casi no altera nada; se imputa para no
+    perder dos pasajeros con el resto de sus datos completos.
+    """
+    out = df.copy()
+    moda = out["Embarked"].mode()[0]
+    out["Embarked"] = out["Embarked"].fillna(moda)
+    return out
 
 
 def impute_age(df: pd.DataFrame) -> pd.DataFrame:
-    """Paso 22: imputa Age conservando AgeOriginal para auditar."""
-    return df  # TODO Paso 22
+    """Paso 22: imputa Age con el promedio de su grupo de Sex.
+
+    Se usa el promedio POR GÉNERO y no el global: es una estimación algo mejor
+    que la media de todos, aunque sigue siendo gruesa.
+
+    Conserva AgeOriginal (con sus NaN) y marca las filas tocadas en
+    AgeImputada. Esto permite auditar después qué valores son reales y cuáles
+    inventados, y repetir cualquier análisis solo con los reales.
+
+    Importante: esta imputación es para EXPLORAR. Calcular el promedio con
+    todos los pasajeros y luego entrenar un modelo con él filtra información
+    del conjunto de prueba hacia el de entrenamiento (fuga de datos). El
+    modelo de la Parte 11 vuelve a imputar por su cuenta, solo con datos de
+    entrenamiento.
+    """
+    out = df.copy()
+    out["AgeOriginal"] = out["Age"]
+    out["AgeImputada"] = out["Age"].isna()
+
+    promedios = out.groupby("Sex")["Age"].mean()
+    out["Age"] = out["Age"].fillna(out["Sex"].map(promedios))
+
+    # Reto 22.1: la desviación estándar baja porque se añaden valores en el
+    # centro de la distribución, que no aportan dispersión.
+    log.info(
+        "Age: %d imputadas | desviación estándar antes %.2f -> después %.2f",
+        int(out["AgeImputada"].sum()),
+        out["AgeOriginal"].std(),
+        out["Age"].std(),
+    )
+    return out
 
 
 def encode_categoricals(df: pd.DataFrame) -> pd.DataFrame:
-    """Pasos 21, 23, 24 y 26: versiones numéricas NSex, NEmbarked, NCabin, NTitulo."""
-    return df  # TODO Pasos 21, 23, 24, 26
+    """Pasos 21, 23, 24 y 26: versiones numéricas NSex, NEmbarked, NCabin, NTitulo.
+
+    Los mapas son FIJOS, no derivados de los datos. Si NCabin se construyera
+    con sorted(df['TCabin'].unique()), bastaría que una cubierta desapareciera
+    de una ejecución para que todos los números cambiaran y los resultados
+    dejaran de ser comparables entre corridas.
+
+    Advertencia: un número impone un orden que aquí no existe. ¿'X'
+    (desconocida, 8) es mayor que 'G' (6)? ¿'Q' (2) mayor que 'S' (0)? Para
+    correlaciones es una simplificación aceptable; para modelar, la Parte 11
+    usa one-hot, que no inventa ese orden.
+    """
+    out = df.copy()
+    out["NSex"] = out["Sex"].map({"female": 0, "male": 1})
+    out["NEmbarked"] = out["Embarked"].map({"S": 0, "C": 1, "Q": 2})
+    out["NCabin"] = out["TCabin"].map({letra: i for i, letra in enumerate(DECKS)})
+    out["NTitulo"] = out["TTitulo"].map({"Mr": 0, "Mrs": 1, "Miss": 2, "Otro": 3})
+    return out
 
 
 # --------------------------------------------------------------------------
@@ -201,13 +273,24 @@ def drop_original_columns(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def validate_silver(df: pd.DataFrame) -> pd.DataFrame:
-    """Paso 33: contrato de salida. Sin nulos en las columnas derivadas.
+    """Paso 33: contrato de salida. Ninguna columna derivada puede tener nulos.
 
-    Todavía sin implementar: las columnas que debe vigilar (Person, Alone,
-    TCabin, TTitulo, NSex, NEmbarked, NCabin, NTitulo) no existen hasta que se
-    completen las transformaciones de arriba. AgeOriginal sí podrá tener nulos.
+    AgeOriginal queda fuera a propósito: sus nulos son el registro de qué
+    edades no se conocían, y perderlos haría imposible auditar la imputación.
     """
-    return df  # TODO Paso 33
+    obligatorias = [
+        "Survived", "Pclass", "Age", "Fare", "Embarked", "Person", "Alone",
+        "TCabin", "TTitulo", "NSex", "NEmbarked", "NCabin", "NTitulo",
+    ]
+    faltantes = [c for c in obligatorias if c not in df.columns]
+    if faltantes:
+        raise ValueError(f"Silver incumple el contrato: faltan columnas {faltantes}")
+
+    con_nulos = {c: int(df[c].isna().sum()) for c in obligatorias if df[c].isna().any()}
+    if con_nulos:
+        raise ValueError(f"Silver incumple el contrato: nulos en columnas derivadas {con_nulos}")
+
+    return df
 
 
 def build_silver(bronze: pd.DataFrame) -> pd.DataFrame:

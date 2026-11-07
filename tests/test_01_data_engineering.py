@@ -153,12 +153,104 @@ def test_survived_stays_numeric_so_its_mean_is_the_rate(sample):
     assert out["Survived"].mean() == pytest.approx(0.5)
 
 
+# --- Títulos (Pasos 25 y 26) -----------------------------------------------
+
+def test_titles_are_extracted_and_consolidated(sample):
+    """Prueba del enunciado: Master -> Mr, the Countess -> Mrs, Dr -> Otro."""
+    out = de.consolidate_titles(de.add_title(sample))
+    assert out["TTitulo"].tolist() == ["Mr", "Mrs", "Miss", "Mr", "Mrs", "Otro"]
+
+
+def test_add_title_extracts_the_raw_title(sample):
+    """Antes de consolidar, el título es el que trae el nombre."""
+    out = de.add_title(sample)
+    assert out["TTitulo"].tolist() == [
+        "Mr", "Mrs", "Miss", "Master", "the Countess", "Dr",
+    ]
+
+
+# --- Imputaciones (Pasos 21 y 22) ------------------------------------------
+
+def test_impute_embarked_uses_mode(sample):
+    """Prueba del enunciado."""
+    out = de.impute_embarked(sample)
+    assert out["Embarked"].isna().sum() == 0
+    assert out.loc[3, "Embarked"] == "S"
+
+
+def test_impute_age_by_sex_keeps_original(sample):
+    """Prueba del enunciado."""
+    out = de.impute_age(sample)
+    assert out["Age"].isna().sum() == 0
+    assert out.loc[2, "Age"] == pytest.approx(35.5)     # promedio de mujeres: (38 + 33) / 2
+    assert out.loc[5, "Age"] == pytest.approx(12.0)     # promedio de hombres: (22 + 2) / 2
+    assert out["AgeOriginal"].isna().sum() == 2
+    assert out["AgeImputada"].tolist() == [False, False, True, False, False, True]
+
+
+def test_impute_age_reduces_dispersion(sample):
+    """Reto 22.1: imputar con la media añade valores al centro y baja la desviación."""
+    out = de.impute_age(sample)
+    assert out["Age"].std() < out["AgeOriginal"].std()
+
+
+# --- Codificación (Pasos 21, 23, 24 y 26) ----------------------------------
+
+def test_encode_categoricals_uses_fixed_maps(sample):
+    entrada = de.consolidate_titles(de.add_title(de.add_cabin_features(de.impute_embarked(sample))))
+    out = de.encode_categoricals(entrada)
+    assert out["NSex"].tolist() == [1, 0, 0, 1, 0, 1]
+    assert out["NEmbarked"].tolist() == [0, 1, 0, 0, 0, 2]
+    assert out["NCabin"].tolist() == [8, 2, 8, 8, 1, 8]    # X=8, C=2, B=1 sobre DECKS
+    assert out["NTitulo"].tolist() == [0, 1, 2, 0, 1, 3]
+
+
+def test_ncabin_map_does_not_depend_on_the_data(sample):
+    """El mapa sale de DECKS, no de las cubiertas presentes.
+
+    Con sorted(df['TCabin'].unique()) estos dos subconjuntos darían números
+    distintos para la misma cubierta, y los resultados dejarían de ser
+    comparables entre ejecuciones.
+    """
+    def preparar(d):
+        return de.encode_categoricals(
+            de.consolidate_titles(de.add_title(de.add_cabin_features(de.impute_embarked(d))))
+        )
+
+    completo = preparar(sample)
+    parcial = preparar(sample.iloc[[1, 4]])
+    assert completo.loc[1, "NCabin"] == parcial.loc[1, "NCabin"] == 2    # cubierta C
+    assert completo.loc[4, "NCabin"] == parcial.loc[4, "NCabin"] == 1    # cubierta B
+
+
+# --- Contrato de salida (Paso 33) ------------------------------------------
+
+def test_validate_silver_accepts_a_complete_pipeline(sample):
+    out = de.build_silver(sample)
+    assert de.validate_silver(out) is out
+
+
+def test_validate_silver_rejects_nulls_in_derived_columns(sample):
+    roto = de.build_silver(sample)
+    roto.loc[0, "NSex"] = None
+    with pytest.raises(ValueError):
+        de.validate_silver(roto)
+
+
+def test_validate_silver_allows_nulls_in_age_original(sample):
+    """AgeOriginal conserva los NaN a proposito: son el registro de qué se imputó."""
+    out = de.build_silver(sample)
+    assert out["AgeOriginal"].isna().sum() == 2
+    de.validate_silver(out)
+
+
 # --- Pureza de todas las transformaciones ya implementadas -----------------
 
 def test_functions_do_not_mutate_their_input(sample):
-    """Prueba del enunciado, adaptada a las funciones ya implementadas."""
+    """Prueba del enunciado: ninguna transformación altera lo que recibe."""
     before = sample.copy(deep=True)
-    for fn in (de.add_person, de.add_family_features, de.add_cabin_features, de.cast_types):
+    for fn in (de.add_person, de.add_family_features, de.add_cabin_features,
+               de.cast_types, de.add_title, de.impute_embarked, de.impute_age):
         fn(sample)
     pd.testing.assert_frame_equal(sample, before)
 
