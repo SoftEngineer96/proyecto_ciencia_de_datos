@@ -225,12 +225,21 @@ def test_ncabin_map_does_not_depend_on_the_data(sample):
 
 # --- Contrato de salida (Paso 33) ------------------------------------------
 
+def test_validate_silver_fails_on_nulls(sample):
+    """Prueba del enunciado (Paso 33)."""
+    out = de.build_silver(sample)
+    out.loc[0, "Fare"] = np.nan
+    with pytest.raises(ValueError):
+        de.validate_silver(out)
+
+
 def test_validate_silver_accepts_a_complete_pipeline(sample):
     out = de.build_silver(sample)
     assert de.validate_silver(out) is out
 
 
-def test_validate_silver_rejects_nulls_in_derived_columns(sample):
+def test_validate_silver_also_guards_the_encoded_columns(sample):
+    """Complementa la del enunciado: no solo las originales, también las derivadas."""
     roto = de.build_silver(sample)
     roto.loc[0, "NSex"] = None
     with pytest.raises(ValueError):
@@ -257,24 +266,29 @@ def test_functions_do_not_mutate_their_input(sample):
 
 # --- Salida ----------------------------------------------------------------
 
-def test_drop_original_columns_returns_a_copy(sample):
+def test_drop_original_columns(sample):
+    """Prueba del enunciado (Paso 32)."""
     out = de.drop_original_columns(sample)
-    for col in ("Name", "Sex", "Embarked", "Cabin"):
-        assert col not in out.columns
-    assert "Name" in sample.columns          # el original no se tocó
+    assert not {"Name", "Sex", "Embarked", "Cabin"} & set(out.columns)
+    assert "Name" in sample.columns       # la entrada no se modifica
 
 
 # --- La cadena completa ----------------------------------------------------
 
-def test_build_silver_runs_end_to_end(sample):
-    """Con funciones de paso aún sin implementar, la cadena no debe romperse.
-
-    Protege contra el error de escribir los cuerpos pendientes como '...',
-    que devuelve None y rompe el primer .pipe().
-    """
-    out = de.build_silver(sample)
-    assert isinstance(out, pd.DataFrame)
+def test_build_silver_end_to_end(sample):
+    """Prueba del enunciado: la cadena completa produce todas las derivadas."""
+    out = de.validate_silver(de.build_silver(sample))
     assert len(out) == len(sample)
+    for col in ["Person", "Alone", "TCabin", "TTitulo", "NSex", "NEmbarked", "NCabin",
+                "NTitulo", "AgeOriginal", "Survivor"]:
+        assert col in out.columns
+    assert out.loc[1, "NCabin"] == de.DECKS.index("C")   # el mapa de cubiertas es fijo
+
+
+def test_build_silver_never_returns_none(sample):
+    """Protege contra escribir un cuerpo pendiente como '...', que devuelve
+    None y rompería el primer .pipe() de la cadena."""
+    assert isinstance(de.build_silver(sample), pd.DataFrame)
 
 
 def test_run_writes_both_parquets(tmp_path, sample):
