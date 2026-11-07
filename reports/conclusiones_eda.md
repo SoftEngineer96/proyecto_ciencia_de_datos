@@ -271,3 +271,61 @@ correlación casi nula de H14.
 
 Para un informe riguroso, estas estadísticas deberían recalcularse sobre
 `AgeOriginal`, restringidas a los 714 pasajeros con edad conocida.
+
+## H17. La imputación encoge la caja y fabrica atípicos (Paso 30)
+
+Rango intercuartílico de la edad, antes y después de imputar:
+
+| | Mujeres | Hombres |
+|---|---|---|
+| `AgeOriginal` | 19.00 | 18.00 |
+| `Age` imputada | 14.00 | 12.00 |
+
+El IQR cae un 26 % en mujeres y un 33 % en hombres, porque 177 pasajeros se
+concentran en solo dos valores del centro de la distribución.
+
+**Efecto secundario.** Un atípico se define como un punto fuera de 1.5 × IQR.
+Al encoger el IQR, el umbral se estrecha y pasajeros que antes quedaban dentro
+pasan a marcarse como anómalos: en el boxplot comparativo aparecen visiblemente
+más puntos sueltos con la edad imputada, pese a que los datos reales no
+cambiaron.
+
+**Consecuencia.** La detección de atípicos del Paso 38 debe hacerse sobre
+`AgeOriginal`. Hacerla sobre `Age` marcaría como anómalos a pasajeros normales.
+
+## H18. El boxplot tiene el mismo punto ciego que la correlación (Paso 30)
+
+Las cajas de `AgeOriginal` por supervivencia son casi idénticas: medianas en
+torno a 28 años en ambos grupos. Coherente con la correlación de −0.08 (H14),
+y engañoso por la misma razón.
+
+El boxplot resume distribuciones completas y no detecta un patrón que sube en
+la infancia y baja en la adultez. La única pista visible es el bigote inferior
+del grupo que sobrevivió, que llega casi a 0: los bebés.
+
+Dos herramientas distintas —correlación de Pearson y boxplot— comparten la
+misma limitación. Detectar la relación exigió agrupar por tramos de edad
+(Paso 19).
+
+## H19. La tarifa está fuertemente sesgada a la derecha (Paso 31)
+
+| | |
+|---|---|
+| Media | 32.20 |
+| Mediana | 14.45 |
+| Asimetría | **4.79** |
+| Percentil 99 | 249.01 |
+| Máximo | 512.33 |
+
+La media más que duplica la mediana y la asimetría de 4.79 está muy por encima
+del umbral de 1 que ya indica sesgo fuerte. El 1 % más caro empieza en 249,
+casi 17 veces la mediana.
+
+**Implicaciones para el modelado:**
+
+1. **La media no representa al pasajero típico.** Un puñado de tarifas
+   extremas arrastra el promedio muy por encima de lo que pagó la mayoría.
+2. **Un modelo lineal sobrepondera esos extremos**, porque minimiza errores al
+   cuadrado y un punto lejano pesa mucho más que uno cercano.
+3. **El remedio habitual es transformar**, por ejemplo con `log(1 + Fare)`, que
+   comprime la cola y acerca la distribución a la simetría.
