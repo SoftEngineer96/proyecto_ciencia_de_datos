@@ -11,9 +11,20 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
+from sklearn.base import BaseEstimator, TransformerMixin
+from sklearn.compose import ColumnTransformer
+from sklearn.dummy import DummyClassifier
+from sklearn.ensemble import HistGradientBoostingClassifier, RandomForestClassifier
+from sklearn.impute import SimpleImputer
+from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
 from sklearn.model_selection import train_test_split
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
+from sklearn.tree import DecisionTreeClassifier
 
 from flows.common.config import settings
 from flows.common.logging import get_logger
@@ -123,21 +134,125 @@ def baseline_scores(X: pd.DataFrame, y: pd.Series) -> pd.DataFrame:
 
 
 # --------------------------------------------------------------------------
-# Pendientes (Partes 11 a 17)
+# Paso 44 — imputación de edad por grupo, como transformador
 # --------------------------------------------------------------------------
-def build_preprocessor():
-    """Parte 11: ColumnTransformer con imputación, escalado y one-hot."""
-    raise NotImplementedError("Parte 11")
+class GroupAgeImputer(BaseEstimator, TransformerMixin):
+    """Rellena 'Age' con el promedio de su grupo, aprendido SOLO en fit().
+
+    Es la imputación del Paso 22 convertida en transformador de scikit-learn,
+    y esa conversión es lo que elimina la fuga: fit() calcula los promedios
+    con los datos que recibe —dentro de la validación cruzada, solo los de
+    entrenamiento de ese pliegue— y transform() los aplica a cualquier dato.
+
+    Si en transform aparece un grupo que fit nunca vio, usa el promedio global
+    del entrenamiento en lugar de dejar un nulo.
+    """
+
+    def __init__(self, group_cols=("Sex",), target="Age"):
+        self.group_cols = group_cols
+        self.target = target
+
+    def fit(self, X, y=None):
+        cols = list(self.group_cols)
+        self.group_means_ = X.groupby(cols)[self.target].mean()
+        self.global_mean_ = X[self.target].mean()
+        return self
+
+    def transform(self, X):
+        X = X.copy()
+        cols = list(self.group_cols)
+        means = self.group_means_.rename("_fill").reset_index()
+        fill = X[cols].merge(means, on=cols, how="left")["_fill"].to_numpy(dtype=float)
+        fill = np.where(np.isnan(fill), self.global_mean_, fill)
+        X[self.target] = X[self.target].fillna(pd.Series(fill, index=X.index))
+        return X
 
 
-def build_models():
-    """Parte 12: diccionario de modelos candidatos dentro de su Pipeline."""
-    raise NotImplementedError("Parte 12")
+# --------------------------------------------------------------------------
+# Paso 45 — el pipeline completo
+# --------------------------------------------------------------------------
+def build_pipeline(model, num_features=None, cat_features=None) -> Pipeline:
+    """GroupAgeImputer -> ColumnTransformer -> modelo, todo en un Pipeline.
+
+    Un Pipeline encadena los pasos en UN solo objeto con fit y predict. Al
+    hacer fit, cada paso aprende únicamente de los datos que recibe —medianas,
+    categorías, medias—; al predecir, aplica lo aprendido. Eso garantiza el
+    mismo preprocesamiento en entrenamiento, validación y producción, sin
+    duplicar código y sin que una estadística del conjunto de prueba se filtre
+    al de entrenamiento.
+
+    Numéricas: mediana por si quedara algún faltante (Fare, por ejemplo) y
+    estandarización, que los modelos basados en distancia necesitan.
+
+    Categóricas: la más frecuente para los faltantes, y one-hot en vez de un
+    número por categoría. One-hot no impone un orden inexistente: evita que el
+    modelo interprete que 'Q' (2) es mayor que 'S' (0).
+
+    min_frequency=10 agrupa las categorías muy raras —como la cubierta T, con
+    un solo pasajero— en lugar de crear columnas casi vacías que el modelo
+    podría memorizar.
+
+    sparse_threshold=0 fuerza salida densa, que todos los modelos aceptan.
+
+    La imputación de edad agrupa por Sex Y Pclass, más específica que la del
+    Paso 22, que solo usaba Sex. La comparación entre ambas está en el
+    cuaderno 04.
+    """
+    num_features = NUM_FEATURES if num_features is None else list(num_features)
+    cat_features = CAT_FEATURES if cat_features is None else list(cat_features)
+
+    num = Pipeline([
+        ("imputer", SimpleImputer(strategy="median")),
+        ("scaler", StandardScaler()),
+    ])
+    cat = Pipeline([
+        ("imputer", SimpleImputer(strategy="most_frequent")),
+        ("onehot", OneHotEncoder(handle_unknown="infrequent_if_exist", min_frequency=10)),
+    ])
+    prep = ColumnTransformer(
+        [("num", num, num_features), ("cat", cat, cat_features)],
+        sparse_threshold=0,
+    )
+    return Pipeline([
+        ("age_imputer", GroupAgeImputer(group_cols=("Sex", "Pclass"))),
+        ("prep", prep),
+        ("model", model),
+    ])
 
 
-def evaluate_models(X, y):
-    """Parte 13: validación cruzada estratificada de todos los candidatos."""
-    raise NotImplementedError("Parte 13")
+# --------------------------------------------------------------------------
+# Paso 47 — modelos candidatos
+# --------------------------------------------------------------------------
+def get_candidates(random_state: int = 42) -> dict:
+    """Diccionario {nombre: estimador sin entrenar}.
+
+    Una familia variada: un baseline que no aprende nada, un modelo lineal
+    interpretable, un árbol simple, dos ensambles y un modelo basado en
+    distancia. Todos con la semilla fija, para que la comparación sea
+    reproducible.
+
+    'dummy' está incluido a propósito: si un modelo no lo supera con holgura,
+    el problema está en los datos o en el preprocesamiento, no en el modelo.
+    """
+    return {
+        "dummy": DummyClassifier(strategy="most_frequent"),
+        "logreg": LogisticRegression(max_iter=1000),
+        "tree": DecisionTreeClassifier(max_depth=4, random_state=random_state),
+        "forest": RandomForestClassifier(
+            n_estimators=300, random_state=random_state, n_jobs=-1
+        ),
+        "hgb": HistGradientBoostingClassifier(random_state=random_state),
+        "knn": KNeighborsClassifier(),
+    }
+
+
+# --------------------------------------------------------------------------
+# Pendientes (Partes 12 a 17)
+# --------------------------------------------------------------------------
+def cross_validate_candidates(X, y, num_features=None, cat_features=None,
+                              random_state=None, cv_folds=None):
+    """Paso 48: validación cruzada estratificada de todos los candidatos."""
+    raise NotImplementedError("Paso 48")
 
 
 def tune_model(X, y):
