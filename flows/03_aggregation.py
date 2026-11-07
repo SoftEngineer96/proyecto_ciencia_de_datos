@@ -65,46 +65,144 @@ def chi2_sex_survival(df: pd.DataFrame) -> dict:
 
 
 # --------------------------------------------------------------------------
-# Pendientes de la Parte 9 (Pasos 34 a 38)
+# Parte 9 — análisis crítico: interacciones, confusión y atípicos
 # --------------------------------------------------------------------------
+def _tabla_parquet(t: pd.DataFrame) -> pd.DataFrame:
+    """Deja una tabla lista para Parquet: índice como columna y nombres de texto.
+
+    Un pivot_table con columns='Pclass' produce columnas 1, 2, 3 (enteros), y
+    Parquet exige que los nombres de columna sean texto.
+
+    Además deja el eje de columnas SIN nombre. pivot_table lo bautiza con el
+    nombre de la variable pivotada ('Sex', 'Pclass'), Parquet no guarda ese
+    atributo, y al releer la tabla no sería idéntica a la escrita.
+    """
+    t = t.reset_index().rename(columns=str)
+    t.columns.name = None
+    return t
+
+
 def survival_by_class_sex(df: pd.DataFrame) -> pd.DataFrame:
-    """Paso 34: tasa de supervivencia con Pclass en filas y Sex en columnas."""
-    raise NotImplementedError("Paso 34")
+    """Paso 34: tasa de supervivencia con Pclass en filas y Sex en columnas.
+
+    Es la interacción central del análisis: ninguna de las dos variables
+    explica el resultado por sí sola.
+    """
+    return _tabla_parquet(
+        df.pivot_table(values="Survived", index="Pclass", columns="Sex", aggfunc="mean")
+    )
 
 
 def survival_by_embarked(df: pd.DataFrame) -> pd.DataFrame:
-    """Paso 35 (1): tasa de supervivencia por puerto de embarque."""
-    raise NotImplementedError("Paso 35")
+    """Paso 35 (1): tasa de supervivencia por puerto, SIN controlar por clase.
+
+    Esta tabla es deliberadamente engañosa y existe para compararla con la
+    siguiente: el puerto parece importar, pero lo que importa es la clase que
+    embarcó en cada uno.
+    """
+    return _tabla_parquet(df.groupby("Embarked")["Survived"].agg(["mean", "count"]))
 
 
 def survival_by_embarked_class(df: pd.DataFrame) -> pd.DataFrame:
-    """Paso 35 (2): la misma tasa, estratificada por clase."""
-    raise NotImplementedError("Paso 35")
+    """Paso 35 (2): la misma tasa, ESTRATIFICADA por clase.
+
+    Estratificar es comparar dentro de cada nivel de la tercera variable. Si el
+    efecto del puerto se desvanece al mirar dentro de cada clase, el puerto no
+    era la causa: era un indicador de la clase.
+    """
+    return _tabla_parquet(
+        df.pivot_table(values="Survived", index="Embarked", columns="Pclass", aggfunc="mean")
+    )
 
 
 def add_fare_quartile(df: pd.DataFrame) -> pd.DataFrame:
-    """Paso 36 (1): agrega el cuartil de tarifa."""
-    raise NotImplementedError("Paso 36")
+    """Paso 36 (1): FareQ, el cuartil de tarifa calculado DENTRO de cada clase.
+
+    Calcularlo sobre toda la tarifa no respondería la pregunta: los cuartiles
+    globales serían casi un sinónimo de la clase. Dividiendo dentro de cada
+    clase se compara a pasajeros de la misma clase entre sí, que es lo que
+    permite ver si pagar más ayudaba por encima de la clase.
+
+    duplicates='drop' evita el error cuando una clase tiene tarifas repetidas
+    y dos bordes de cuartil coinciden.
+    """
+    out = df.copy()
+    out["FareQ"] = out.groupby("Pclass")["Fare"].transform(
+        lambda s: pd.qcut(s, 4, labels=False, duplicates="drop")
+    )
+    return out
 
 
 def survival_by_fare_quartile_class(df: pd.DataFrame) -> pd.DataFrame:
     """Paso 36 (2): tasa por cuartil de tarifa, estratificada por clase."""
-    raise NotImplementedError("Paso 36")
+    con_cuartil = add_fare_quartile(df)
+    return _tabla_parquet(
+        con_cuartil.pivot_table(
+            values="Survived", index="FareQ", columns="Pclass", aggfunc="mean"
+        )
+    )
 
 
 def survival_by_family(df: pd.DataFrame) -> pd.DataFrame:
-    """Paso 37: tasa de supervivencia por tamaño de familia."""
-    raise NotImplementedError("Paso 37")
+    """Paso 37: tasa de supervivencia por tamaño de familia, con su n.
+
+    El 'count' es imprescindible aquí: los grupos familiares grandes tienen
+    muy pocos pasajeros y sus tasas son poco confiables.
+    """
+    return _tabla_parquet(df.groupby("Familia")["Survived"].agg(["mean", "count"]))
 
 
 def outlier_mask_iqr(s: pd.Series) -> pd.Series:
-    """Paso 38 (1): máscara de atípicos por el criterio del rango intercuartílico."""
-    raise NotImplementedError("Paso 38")
+    """Paso 38 (1): máscara booleana de atípicos por la regla del IQR.
+
+    Es atípico lo que queda fuera de [Q1 − 1.5·IQR, Q3 + 1.5·IQR].
+
+    Atípico NO significa erróneo. Una tarifa de 512 es real: alguien la pagó.
+    La regla señala candidatos a revisar, no filas a eliminar.
+
+    Los nulos no se marcan: una comparación con NaN da False.
+    """
+    q1, q3 = s.quantile([0.25, 0.75])
+    iqr = q3 - q1
+    return (s < q1 - 1.5 * iqr) | (s > q3 + 1.5 * iqr)
 
 
 def outlier_summary(df: pd.DataFrame) -> pd.DataFrame:
-    """Paso 38 (2-3): resumen de atípicos por columna."""
-    raise NotImplementedError("Paso 38")
+    """Paso 38 (2-3): cuántos atípicos hay por columna y cómo les fue.
+
+    Para la edad usa AgeOriginal cuando existe: hacerlo sobre la Age imputada
+    marcaría pasajeros normales como anómalos, porque la imputación encoge el
+    IQR y estrecha el umbral (ver H17 en reports/conclusiones_eda.md).
+    """
+    columna_edad = "AgeOriginal" if "AgeOriginal" in df.columns else "Age"
+    objetivo = {"Fare": "Fare", "Age": columna_edad, "Familia": "Familia"}
+
+    filas = []
+    for nombre, col in objetivo.items():
+        if col not in df.columns:
+            continue
+        s = df[col]
+        mask = outlier_mask_iqr(s)
+        q1, q3 = s.quantile([0.25, 0.75])
+        iqr = q3 - q1
+        validos = int(s.notna().sum())
+
+        fila = {
+            "columna": nombre,
+            "calculada_sobre": col,
+            "n_atipicos": int(mask.sum()),
+            "pct_atipicos": round(100.0 * int(mask.sum()) / validos, 2) if validos else 0.0,
+            "limite_inferior": round(float(q1 - 1.5 * iqr), 2),
+            "limite_superior": round(float(q3 + 1.5 * iqr), 2),
+        }
+        if "Survived" in df.columns:
+            fila["tasa_atipicos"] = (
+                round(float(df.loc[mask, "Survived"].mean()), 3) if mask.any() else float("nan")
+            )
+            fila["tasa_resto"] = round(float(df.loc[~mask, "Survived"].mean()), 3)
+        filas.append(fila)
+
+    return pd.DataFrame(filas)
 
 
 # --------------------------------------------------------------------------
@@ -115,16 +213,14 @@ def run(in_dir: Path | None = None, out_dir: Path = GOLD) -> Path:
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # Solo las tablas ya implementadas. Las de la Parte 9 se añaden aquí
-    # conforme se completen, en lugar de escribir parquets vacíos ahora.
     tables = {
         **group_stats(df),
-        # "survival_by_class_sex": survival_by_class_sex(df),          # Paso 34
-        # "survival_by_embarked": survival_by_embarked(df),            # Paso 35
-        # "survival_by_embarked_class": survival_by_embarked_class(df),  # Paso 35
-        # "survival_by_fare_quartile_class": survival_by_fare_quartile_class(df),  # Paso 36
-        # "survival_by_family": survival_by_family(df),                # Paso 37
-        # "outlier_summary": outlier_summary(df),                      # Paso 38
+        "survival_by_class_sex": survival_by_class_sex(df),
+        "survival_by_embarked": survival_by_embarked(df),
+        "survival_by_embarked_class": survival_by_embarked_class(df),
+        "survival_by_fare_quartile_class": survival_by_fare_quartile_class(df),
+        "survival_by_family": survival_by_family(df),
+        "outlier_summary": outlier_summary(df),
     }
     for name, table in tables.items():
         table.to_parquet(out_dir / f"{name}.parquet", index=False)
