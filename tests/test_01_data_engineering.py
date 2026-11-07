@@ -102,6 +102,53 @@ def test_add_person_does_not_mutate_input(sample):
     assert "Person" not in sample.columns
 
 
+# --- Cabina (Paso 11) ------------------------------------------------------
+
+def test_cabin_features(sample):
+    """Prueba del enunciado."""
+    out = de.add_cabin_features(sample)
+    assert out["TCabin"].tolist() == ["X", "C", "X", "X", "B", "X"]
+    assert out["HasCabin"].tolist() == [0, 1, 0, 0, 1, 0]
+
+
+def test_cabin_features_keep_the_original_column(sample):
+    """Silver conserva Cabin: nunca se descarta información en silencio."""
+    out = de.add_cabin_features(sample)
+    assert "Cabin" in out.columns
+    assert out["Cabin"].isna().sum() == 4
+
+
+def test_has_cabin_matches_tcabin(sample):
+    """HasCabin == 0 si y solo si TCabin == 'X'. Las dos columnas son coherentes."""
+    out = de.add_cabin_features(sample)
+    assert ((out["TCabin"] == "X") == (out["HasCabin"] == 0)).all()
+
+
+# --- Familia (Paso 14) -----------------------------------------------------
+
+def test_family_features(sample):
+    """Prueba del enunciado."""
+    out = de.add_family_features(sample)
+    assert out["Familia"].tolist() == [1, 1, 0, 4, 0, 0]
+    assert out["Alone"].tolist() == ["with Family", "with Family", "Alone",
+                                     "with Family", "Alone", "Alone"]
+
+
+def test_alone_is_consistent_with_familia(sample):
+    out = de.add_family_features(sample)
+    assert ((out["Familia"] == 0) == (out["Alone"] == "Alone")).all()
+
+
+# --- Pureza de todas las transformaciones ya implementadas -----------------
+
+def test_functions_do_not_mutate_their_input(sample):
+    """Prueba del enunciado, adaptada a las funciones ya implementadas."""
+    before = sample.copy(deep=True)
+    for fn in (de.add_person, de.add_family_features, de.add_cabin_features, de.cast_types):
+        fn(sample)
+    pd.testing.assert_frame_equal(sample, before)
+
+
 # --- Salida ----------------------------------------------------------------
 
 def test_drop_original_columns_returns_a_copy(sample):

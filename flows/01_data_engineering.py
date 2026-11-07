@@ -111,13 +111,41 @@ def add_person(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 def add_cabin_features(df: pd.DataFrame) -> pd.DataFrame:
-    """Pasos 11 y 24: TCabin (cubierta, X si desconocida) y HasCabin (0/1)."""
-    return df  # TODO Pasos 11 y 24
+    """Pasos 11 y 24: TCabin (cubierta) y HasCabin (0/1).
+
+    La primera letra de Cabin es la cubierta del barco ('C85' -> 'C'). Donde no
+    hay cabina registrada se pone 'X': convierte el "no sé" en una categoría
+    explícita en vez de un hueco, que es la opción (c) de las tres decisiones
+    de limpieza de la Parte 5.
+
+    HasCabin separa el HECHO de que el dato exista de su contenido. Importa
+    porque el Paso 5 mostró que ese hecho no es aleatorio: falta en el 18.5 %
+    de primera clase y en el 97.6 % de tercera, así que "no hay cabina
+    registrada" es en sí información sobre el pasajero.
+
+    Cabin original se conserva en Silver: nunca se descarta información en
+    silencio.
+    """
+    out = df.copy()
+    out["TCabin"] = out["Cabin"].str[0].fillna("X")
+    out["HasCabin"] = out["Cabin"].notna().astype(int)
+    return out
 
 
 def add_family_features(df: pd.DataFrame) -> pd.DataFrame:
-    """Paso 14: Familia (SibSp + Parch) y Alone ('Alone' / 'with Family')."""
-    return df  # TODO Paso 14
+    """Paso 14: Familia (SibSp + Parch) y Alone ('Alone' / 'with Family').
+
+    SibSp cuenta hermanos y cónyuges a bordo; Parch, padres e hijos. Su suma es
+    el total de familiares que viajaban con el pasajero, sin contarlo a él.
+    Familia = 0 significa que viajaba solo.
+
+    Se guardan las dos: Familia conserva el tamaño (un grupo de 7 no es lo
+    mismo que uno de 1) y Alone da la versión categórica para los gráficos.
+    """
+    out = df.copy()
+    out["Familia"] = out["SibSp"] + out["Parch"]
+    out["Alone"] = np.where(out["Familia"] > 0, "with Family", "Alone")
+    return out
 
 
 def add_survivor_label(df: pd.DataFrame) -> pd.DataFrame:
