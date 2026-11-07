@@ -19,8 +19,14 @@ from sklearn.dummy import DummyClassifier
 from sklearn.ensemble import HistGradientBoostingClassifier, RandomForestClassifier
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
-from sklearn.model_selection import train_test_split
+from sklearn.metrics import (
+    accuracy_score,
+    f1_score,
+    make_scorer,
+    precision_score,
+    recall_score,
+)
+from sklearn.model_selection import StratifiedKFold, cross_validate, train_test_split
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
@@ -247,12 +253,96 @@ def get_candidates(random_state: int = 42) -> dict:
 
 
 # --------------------------------------------------------------------------
-# Pendientes (Partes 12 a 17)
+# Paso 48 — validación cruzada de todos los candidatos
 # --------------------------------------------------------------------------
+def _scorers() -> dict:
+    """Los scorers de SCORING, con zero_division=0 donde hace falta.
+
+    El baseline 'dummy' predice siempre la clase mayoritaria, así que nunca
+    emite un positivo y la precisión queda indefinida (0/0). Con los nombres
+    de texto, scikit-learn llena la salida de UndefinedMetricWarning; con
+    make_scorer se fija el valor en 0, que es la lectura correcta: un modelo
+    que no predice positivos no acierta ninguno.
+    """
+    return {
+        "accuracy": "accuracy",
+        "precision": make_scorer(precision_score, zero_division=0),
+        "recall": make_scorer(recall_score, zero_division=0),
+        "f1": make_scorer(f1_score, zero_division=0),
+        "roc_auc": "roc_auc",
+    }
+
+
 def cross_validate_candidates(X, y, num_features=None, cat_features=None,
-                              random_state=None, cv_folds=None):
-    """Paso 48: validación cruzada estratificada de todos los candidatos."""
-    raise NotImplementedError("Paso 48")
+                              random_state=None, cv_folds=None,
+                              return_folds: bool = False):
+    """Paso 48: validación cruzada estratificada de todos los candidatos.
+
+    Un modelo puede memorizar el entrenamiento y fallar con datos nuevos. La
+    validación cruzada de k pliegues divide el entrenamiento en k partes,
+    entrena con k−1 y evalúa en la restante, rotando. La MEDIA de los k
+    puntajes estima el desempeño y la DESVIACIÓN indica la estabilidad.
+
+    Estratificada: cada pliegue conserva la proporción de supervivientes.
+    shuffle=True con semilla fija: el orden original del archivo no sesga la
+    partición, y el resultado es reproducible.
+
+    Devuelve la tabla ordenada por la métrica principal. Con return_folds=True
+    devuelve además el detalle por pliegue, en formato largo, para el boxplot
+    del Paso 49.
+
+    La columna 'brecha_roc_auc' es entrenamiento menos validación: cuánto peor
+    le va al modelo con datos que no vio. Una brecha grande indica
+    sobreajuste.
+
+    Con 891 pasajeros la varianza es considerable: una diferencia de medio
+    punto entre dos modelos no es evidencia de que uno sea mejor.
+    """
+    semilla = settings.random_state if random_state is None else random_state
+    pliegues = settings.cv_folds if cv_folds is None else cv_folds
+    cv = StratifiedKFold(n_splits=pliegues, shuffle=True, random_state=semilla)
+    scorers = _scorers()
+
+    filas, detalle = [], []
+    for nombre, modelo in get_candidates(semilla).items():
+        pipe = build_pipeline(modelo, num_features, cat_features)
+        res = cross_validate(pipe, X, y, cv=cv, scoring=scorers,
+                             return_train_score=True, n_jobs=1)
+
+        fila = {"modelo": nombre}
+        for metrica in SCORING:
+            fila[f"{metrica}_mean"] = round(float(res[f"test_{metrica}"].mean()), 4)
+            fila[f"{metrica}_std"] = round(float(res[f"test_{metrica}"].std()), 4)
+        fila[f"train_{PRIMARY_METRIC}_mean"] = round(
+            float(res[f"train_{PRIMARY_METRIC}"].mean()), 4
+        )
+        fila[f"brecha_{PRIMARY_METRIC}"] = round(
+            float(res[f"train_{PRIMARY_METRIC}"].mean() - res[f"test_{PRIMARY_METRIC}"].mean()), 4
+        )
+        fila["fit_time_mean"] = round(float(res["fit_time"].mean()), 4)
+        filas.append(fila)
+
+        for metrica in SCORING:
+            for i, valor in enumerate(res[f"test_{metrica}"]):
+                detalle.append({"modelo": nombre, "metrica": metrica,
+                                "pliegue": i, "valor": float(valor)})
+
+        log.info(
+            "%-7s %s=%.4f (+/-%.4f)  brecha=%.4f",
+            nombre, PRIMARY_METRIC,
+            fila[f"{PRIMARY_METRIC}_mean"], fila[f"{PRIMARY_METRIC}_std"],
+            fila[f"brecha_{PRIMARY_METRIC}"],
+        )
+
+    tabla = (pd.DataFrame(filas)
+             .sort_values(f"{PRIMARY_METRIC}_mean", ascending=False)
+             .reset_index(drop=True))
+    return (tabla, pd.DataFrame(detalle)) if return_folds else tabla
+
+
+# --------------------------------------------------------------------------
+# Pendientes (Partes 13 a 17)
+# --------------------------------------------------------------------------
 
 
 def tune_model(X, y):

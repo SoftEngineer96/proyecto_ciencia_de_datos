@@ -251,9 +251,73 @@ def test_every_candidate_fits_inside_the_pipeline(toy):
         assert len(pipe.predict(X)) == len(X), nombre
 
 
-# --- Pendientes -------------------------------------------------------------
+# --- Parte 12: validación cruzada -------------------------------------------
 
-def test_later_parts_fail_loudly(toy):
+def test_cross_validate_returns_one_row_per_candidate(toy):
     X, y = toy
-    with pytest.raises(NotImplementedError):
-        ml.cross_validate_candidates(X, y)
+    tabla = ml.cross_validate_candidates(X, y, cv_folds=3)
+    assert set(tabla["modelo"]) == set(ml.get_candidates())
+    assert len(tabla) == len(ml.get_candidates())
+
+
+def test_cross_validate_reports_mean_and_std_of_every_metric(toy):
+    """La desviacion importa tanto como la media: mide estabilidad."""
+    X, y = toy
+    tabla = ml.cross_validate_candidates(X, y, cv_folds=3)
+    for metrica in ml.SCORING:
+        assert f"{metrica}_mean" in tabla.columns
+        assert f"{metrica}_std" in tabla.columns
+
+
+def test_cross_validate_is_sorted_by_the_primary_metric(toy):
+    X, y = toy
+    col = f"{ml.PRIMARY_METRIC}_mean"
+    valores = ml.cross_validate_candidates(X, y, cv_folds=3)[col].tolist()
+    assert valores == sorted(valores, reverse=True)
+
+
+def test_cross_validate_reports_the_overfitting_gap(toy):
+    """Entrenamiento menos validacion: cuanto peor le va con datos que no vio."""
+    X, y = toy
+    tabla = ml.cross_validate_candidates(X, y, cv_folds=3).set_index("modelo")
+    assert f"brecha_{ml.PRIMARY_METRIC}" in tabla.columns
+    esperada = (tabla[f"train_{ml.PRIMARY_METRIC}_mean"]
+                - tabla[f"{ml.PRIMARY_METRIC}_mean"])
+    np.testing.assert_allclose(tabla[f"brecha_{ml.PRIMARY_METRIC}"], esperada, atol=1e-4)
+
+
+def test_dummy_scores_half_in_roc_auc(toy):
+    """El baseline no ordena nada: su ROC-AUC es el del azar."""
+    X, y = toy
+    tabla = ml.cross_validate_candidates(X, y, cv_folds=3).set_index("modelo")
+    assert tabla.loc["dummy", "roc_auc_mean"] == pytest.approx(0.5, abs=0.01)
+    assert tabla.loc["dummy", "recall_mean"] == 0.0
+
+
+def test_cross_validate_can_return_per_fold_scores(toy):
+    """El Paso 49 necesita el detalle por pliegue para el boxplot."""
+    X, y = toy
+    tabla, pliegues = ml.cross_validate_candidates(X, y, cv_folds=3, return_folds=True)
+    assert list(pliegues.columns) == ["modelo", "metrica", "pliegue", "valor"]
+    assert len(pliegues) == len(tabla) * len(ml.SCORING) * 3
+    assert set(pliegues["pliegue"]) == {0, 1, 2}
+
+
+def test_cross_validate_is_reproducible(toy):
+    """Misma semilla, mismos resultados: sin eso no se pueden comparar modelos."""
+    X, y = toy
+    col = f"{ml.PRIMARY_METRIC}_mean"
+    a = ml.cross_validate_candidates(X, y, cv_folds=3, random_state=7)[col].tolist()
+    b = ml.cross_validate_candidates(X, y, cv_folds=3, random_state=7)[col].tolist()
+    assert a == b
+
+
+def test_cross_validate_accepts_a_custom_feature_set(toy):
+    """El Paso 61 compara con y sin las variables sospechosas de cabina."""
+    X, y = toy
+    tabla = ml.cross_validate_candidates(
+        X, y, cv_folds=3,
+        cat_features=ml.CAT_FEATURES + ml.CABIN_CAT,
+        num_features=ml.NUM_FEATURES + ml.CABIN_NUM,
+    )
+    assert len(tabla) == len(ml.get_candidates())
