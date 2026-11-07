@@ -304,3 +304,229 @@ una única vez, sobre el conjunto de prueba, en la evaluación final.
 **Los hiperparámetros son los de fábrica.** El orden de la tabla puede
 reordenarse tras el ajuste, sobre todo entre `hgb` y `forest`, que son los que
 más margen tienen por corregir.
+
+---
+
+## 7. Evaluación en profundidad y condiciones de uso
+
+**Resultado:** el umbral de decisión se fija en **0.6086**, la probabilidad del
+modelo **no es apta para tarificar** sin calibrar, y el modelo **no debe
+aplicarse a pasajeros varones**, donde encuentra solo el 35 % de los
+supervivientes.
+
+Todo lo que sigue se midió con **predicciones fuera de muestra** sobre los 712
+pasajeros de entrenamiento: cada pasajero predicho por un modelo entrenado sin
+él. El conjunto de prueba sigue cerrado.
+
+### 7.1 Dónde se equivoca el modelo
+
+Matriz de confusión de `hgb` con el umbral por convención (0.5):
+
+| | predicho: no sobrevivió | predicho: sobrevivió |
+|---|---|---|
+| **real: no sobrevivió** | 387 | **52** |
+| **real: sobrevivió** | 76 | 197 |
+
+Las 52 predicciones de la esquina superior derecha son el **error caro** de la
+sección 2: pasajeros a los que el modelo dio por supervivientes y no lo
+fueron, es decir, pólizas con prima insuficiente. Los 76 de la esquina
+inferior izquierda son el error barato: se cobra de más o se rechaza a un
+cliente viable.
+
+El modelo ya comete **0.68 falsos positivos por cada falso negativo**, de modo
+que su sesgo por defecto apunta en la dirección correcta. La pregunta del
+umbral es cuánto más conviene inclinarlo.
+
+### 7.2 El umbral de decisión
+
+| Criterio | Umbral | Precisión | Recall | F1 | Exactitud | FP | FN |
+|---|---|---|---|---|---|---|---|
+| Convención | 0.5000 | 0.7912 | 0.7216 | 0.7548 | 0.8202 | 52 | 76 |
+| **Máximo F1** | **0.6086** | **0.8400** | 0.6923 | **0.7590** | **0.8315** | **36** | 84 |
+| Precisión >= 0.80 | 0.5443 | 0.8008 | 0.7070 | 0.7510 | 0.8202 | 48 | 80 |
+
+**Decisión: `THRESHOLD = 0.6086`.**
+
+El argumento no es que maximice F1, sino que **domina a las otras dos
+opciones**. Frente a 0.5 mejora simultáneamente la precisión (+4.9 pts), el F1
+(+0.4 pts) y la exactitud (+1.1 pts), y recorta el error caro de 52 a 36
+falsos positivos —un 31 % menos— a cambio de 8 falsos negativos adicionales,
+que son el error barato. Cambiar 16 errores caros por 8 baratos es
+exactamente lo que la asimetría declarada en la sección 2 pide hacer.
+
+El piso de precisión del 80 % (0.5443) queda descartado por dominancia: da
+peor F1 y **más** falsos positivos que 0.6086, y su única ventaja es 1.5
+puntos de recall.
+
+Con este umbral la exactitud sube a 0.8315, es decir **+4.2 puntos sobre la
+regla de género**, por encima del mínimo de 2 puntos declarado en la sección 3.
+
+**Tres salvedades que acompañan a esta decisión.**
+
+1. La curva de F1 es **casi plana entre 0.55 y 0.65**: el máximo en 0.6086 es
+   poco marcado. Los cuatro decimales son el valor que arrojó el
+   procedimiento, no una afirmación de precisión; cualquier umbral de ese
+   rango se comporta de forma equivalente. Eso es una virtud: la decisión es
+   robusta.
+2. El umbral se eligió maximizando una métrica **sobre las mismas
+   predicciones** con las que se mide. Es un parámetro ajustado, y su
+   desempeño aquí es por tanto optimista. La magnitud de ese optimismo se
+   verá en la Parte 16.
+3. El umbral se derivó sobre `hgb` con hiperparámetros de fábrica. Si el
+   ajuste de la Parte 14 cambia el modelo, **debe recalcularse** antes de
+   congelarlo en la Parte 17.
+
+### 7.3 Calibración: la probabilidad ordena bien, pero no mide
+
+Brier de `hgb`: **0.1302**, frente a 0.2364 de quien responde siempre la tasa
+base. Un 45 % mejor. Pero el Brier mezcla capacidad de ordenar y calidad de la
+probabilidad, y al separarlas aparece un problema.
+
+| Tramo | n | Promete | Ocurre | Desvío |
+|---|---|---|---|---|
+| 0 – 0.125 | 297 | 0.0350 | 0.0875 | +0.053 |
+| 0.125 – 0.25 | 85 | 0.1854 | 0.2941 | +0.109 |
+| 0.25 – 0.375 | 45 | 0.3021 | 0.2667 | −0.035 |
+| 0.375 – 0.5 | 36 | 0.4445 | 0.3611 | −0.083 |
+| 0.5 – 0.625 | 30 | 0.5618 | 0.4000 | −0.162 |
+| 0.625 – 0.75 | 26 | 0.6910 | 0.5000 | −0.191 |
+| 0.75 – 0.875 | 34 | 0.8188 | 0.7059 | −0.113 |
+| 0.875 – 1.0 | 159 | 0.9643 | 0.9308 | −0.033 |
+
+El patrón tiene forma de **S**: el modelo es pesimista en los tramos bajos y
+optimista en todo el rango medio y alto. Estira las probabilidades hacia 0 y
+hacia 1 más de lo que la evidencia sostiene, que es el sobreajuste de la
+brecha (0.1068) visto desde otro ángulo.
+
+**Qué tan firme es esta lectura.** Los dos tramos inferiores son sólidos: el
+primero, con 297 pasajeros, se desvía 3.2 errores estándar, y el segundo 2.2.
+Los tramos medios están cada uno entre 1.4 y 1.9 errores estándar, así que
+**ninguno demuestra nada por separado**; lo que hace creíble el hallazgo es
+que los seis tramos superiores al 0.25 se desvían en la misma dirección y
+dibujan una curva monótona, no un desorden.
+
+**Consecuencia operativa.** Un pasajero con probabilidad 0.69 sobrevive el
+50 % de las veces. Para una aseguradora que tarifique sobre la probabilidad,
+eso es un error de 19 puntos del lado caro.
+
+> **La probabilidad de este modelo sirve para ORDENAR pasajeros por riesgo, no
+> para fijar una prima.** Cualquier uso que convierta el puntaje en un valor
+> monetario exige calibrarlo antes (Platt o isotónica, ajustadas dentro de la
+> validación cruzada).
+
+Esto también explica por qué el ROC-AUC se ve bien: solo mide ordenamiento, y
+el ordenamiento es justamente lo que el modelo sí hace bien.
+
+### 7.4 Desempeño por subgrupos
+
+Con el umbral 0.5, ordenado de peor a mejor dentro de cada variable:
+
+| Variable | Grupo | n | Tasa real | Exactitud | Precisión | Recall |
+|---|---|---|---|---|---|---|
+| Sex | female | 253 | 0.7431 | 0.8063 | 0.8564 | **0.8883** |
+| Sex | male | 459 | 0.1852 | **0.8279** | 0.5556 | **0.3529** |
+| Pclass | 1 | 171 | 0.6491 | 0.7895 | 0.8505 | 0.8198 |
+| Pclass | 3 | 391 | 0.2430 | 0.7980 | 0.6026 | **0.4947** |
+| Pclass | 2 | 150 | 0.4467 | 0.9133 | 0.9219 | 0.8806 |
+| Edad | 30-50 | 202 | 0.4406 | 0.7822 | 0.7647 | 0.7303 |
+| Edad | 16-30 | 247 | 0.3482 | 0.8016 | 0.7467 | 0.6512 |
+| Edad | sin edad | 137 | 0.2920 | 0.8613 | 0.8000 | 0.7000 |
+| Edad | <16 | 76 | 0.5658 | 0.8684 | 0.8837 | 0.8837 |
+| Edad | 50+ | 50 | 0.3000 | 0.8800 | 0.9091 | 0.6667 |
+
+**El hallazgo central de esta parte: el recall en hombres es 0.3529.** De cada
+tres hombres que sobrevivieron, el modelo encuentra uno. Y cuando predice que
+un hombre sobrevive acierta el 55.6 % de las veces, apenas mejor que una
+moneda. No es un subgrupo marginal: son **459 pasajeros, el 64 % del conjunto
+de entrenamiento**.
+
+**Y sin embargo su exactitud (0.8279) es MAYOR que la de las mujeres
+(0.8063).** Esta inversión es la demostración más clara de por qué la exactitud
+no podía ser la métrica principal: como solo el 18.5 % de los hombres
+sobrevivió, responder "muere" a casi todos regala el 81.5 % sin aprender nada.
+El modelo aprendió mucho sobre las mujeres y casi nada sobre los hombres, y la
+exactitud premia lo contrario.
+
+El mismo fenómeno en tercera clase (n=391, recall 0.4947), que en buena parte
+son los mismos pasajeros.
+
+Dos lecturas secundarias: la segunda clase es donde mejor funciona (exactitud
+0.9133), y los pasajeros **sin edad registrada** rinden bien (0.8613), de modo
+que la imputación dentro del Pipeline no está introduciendo un sesgo
+detectable.
+
+**Los errores de alta confianza confirman el diagnóstico.** De los diez errores
+en los que el modelo estaba más seguro, siete son hombres de segunda o tercera
+clase, título `Mr`, sin cabina registrada, que **sobrevivieron** con
+probabilidades entre 0.0005 y 0.0156; los otros tres son mujeres de primera o
+segunda, `Mrs` o `Miss`, que **murieron** con probabilidades entre 0.98 y 0.99.
+
+Es decir: los errores más confiados son exactamente las **excepciones a la
+regla de género**. El modelo no dispone de ninguna variable que explique por
+qué un hombre de tercera sobrevivió o por qué una mujer de primera no. Eso no
+se corrige ajustando hiperparámetros: falta información —ubicación del
+camarote, posición en el barco al momento del impacto, acceso a un bote—, la
+misma que `reports/conclusiones_eda.md` ya señalaba como ausente.
+
+### 7.5 Curva de aprendizaje: ¿más datos o más regularización?
+
+| n de entrenamiento | ROC-AUC entrenamiento | ROC-AUC validación | Brecha | Desviación |
+|---|---|---|---|---|
+| 113 | 0.9711 | 0.8030 | 0.1681 | 0.0459 |
+| 227 | 0.9821 | 0.8466 | 0.1355 | 0.0222 |
+| 341 | 0.9906 | 0.8601 | 0.1305 | 0.0290 |
+| 455 | 0.9935 | 0.8719 | 0.1216 | 0.0258 |
+| 569 | 0.9936 | 0.8886 | 0.1051 | 0.0192 |
+
+**Diagnóstico: varianza alta, sin saturar.** La curva de entrenamiento está
+clavada cerca de 0.99 **desde los 113 pasajeros**: `hgb` con parámetros de
+fábrica memoriza por completo cualquier cantidad de datos que reciba. La de
+validación sube de forma sostenida y **no se aplana**: del penúltimo al último
+tamaño todavía gana 1.7 puntos.
+
+Más datos seguirían ayudando. Pero 891 pasajeros es todo lo que existe, y 418
+de ellos no tienen desenlace conocido. Como el volumen no es una palanca
+disponible, **la única que queda es la regularización**: limitar la
+profundidad y el número de hojas, exigir más observaciones por hoja, aumentar
+la penalización L2 y bajar la tasa de aprendizaje. La curva indica que ahí hay
+margen real, y eso es precisamente el trabajo de la Parte 14.
+
+Como verificación cruzada: en n=569 —que son los cuatro quintos del conjunto
+que usa cada pliegue— la validación da 0.8886, prácticamente idéntico al
+0.8867 del Paso 48. Las dos rutas de cálculo coinciden.
+
+### 7.6 Usos admisibles y usos descartados
+
+El modelo se apoya en `Sex` y `Pclass`, que son las variables que gobernaron
+la evacuación de 1912. **Predecir bien lo que ocurrió no implica que deba
+ocurrir así**, ni que esas variables sean admisibles para decidir quién recibe
+un servicio hoy; en la mayoría de jurisdicciones, tarificar por sexo es
+ilegal.
+
+A esa objeción de principio se suman ahora dos límites medidos.
+
+**Usos para los que este modelo sirve:**
+
+- Entender y cuantificar los patrones de supervivencia del naufragio de 1912.
+- **Ordenar** pasajeros históricos por riesgo relativo, como insumo de un
+  análisis retrospectivo.
+- Material docente sobre evaluación sin fuga de datos.
+
+**Usos para los que NO sirve, y por qué:**
+
+| Uso | Razón |
+|---|---|
+| Fijar primas o cualquier valor monetario derivado de la probabilidad | La probabilidad está mal calibrada (7.3): un 0.69 vale en realidad 0.50. |
+| Evaluar a pasajeros varones | Recall 0.3529 sobre 459 pasajeros (7.4). El modelo no los distingue. |
+| Decidir sobre personas individuales, en cualquier contexto | Un recall del 35 % en un grupo y del 89 % en otro traslada un trato desigual a quien quede del lado malo. |
+| Extrapolar a otros siniestros o a riesgo contemporáneo | Un único evento, con su tripulación y su protocolo (ver `reports/conclusiones_eda.md`, sección 4). |
+| Cualquier decisión regulada donde el sexo sea factor prohibido | El sexo es la variable dominante del modelo; sin ella, el desempeño es otro. |
+
+**La asimetría entre subgrupos es el límite más serio y merece nombrarse como
+tal.** Un modelo que acierta mucho en un grupo y poco en otro no es "un modelo
+con 82 % de exactitud": es dos modelos de calidad muy distinta compartiendo un
+promedio. Llevarlo a producción sin declarar esa diferencia traslada el trato
+desigual a quienes caen en el grupo mal servido, y lo hace de forma invisible
+para quien solo mire la métrica global. Por eso el desempeño por subgrupos
+entra en la ficha del modelo (`reports/model_card.md`) y no solo en este
+informe.

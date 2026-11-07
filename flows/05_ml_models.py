@@ -21,12 +21,21 @@ from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (
     accuracy_score,
+    brier_score_loss,
+    confusion_matrix,
     f1_score,
     make_scorer,
+    precision_recall_curve,
     precision_score,
     recall_score,
 )
-from sklearn.model_selection import StratifiedKFold, cross_validate, train_test_split
+from sklearn.model_selection import (
+    StratifiedKFold,
+    cross_val_predict,
+    cross_validate,
+    learning_curve,
+    train_test_split,
+)
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
@@ -273,6 +282,19 @@ def _scorers() -> dict:
     }
 
 
+def make_cv(random_state=None, cv_folds=None) -> StratifiedKFold:
+    """El particionador que usa TODO el proyecto, con los mismos parámetros.
+
+    Que el Paso 48 y el Paso 51 compartan esta función no es un detalle de
+    estilo: si los pliegues no fueran idénticos, las probabilidades fuera de
+    muestra de la Parte 13 no corresponderían a la tabla de la Parte 12, y las
+    dos lecturas no serían comparables.
+    """
+    semilla = settings.random_state if random_state is None else random_state
+    pliegues = settings.cv_folds if cv_folds is None else cv_folds
+    return StratifiedKFold(n_splits=pliegues, shuffle=True, random_state=semilla)
+
+
 def cross_validate_candidates(X, y, num_features=None, cat_features=None,
                               random_state=None, cv_folds=None,
                               return_folds: bool = False):
@@ -299,8 +321,7 @@ def cross_validate_candidates(X, y, num_features=None, cat_features=None,
     punto entre dos modelos no es evidencia de que uno sea mejor.
     """
     semilla = settings.random_state if random_state is None else random_state
-    pliegues = settings.cv_folds if cv_folds is None else cv_folds
-    cv = StratifiedKFold(n_splits=pliegues, shuffle=True, random_state=semilla)
+    cv = make_cv(semilla, cv_folds)
     scorers = _scorers()
 
     filas, detalle = [], []
@@ -341,7 +362,217 @@ def cross_validate_candidates(X, y, num_features=None, cat_features=None,
 
 
 # --------------------------------------------------------------------------
-# Pendientes (Partes 13 a 17)
+# Parte 13 — evaluación en profundidad (Pasos 51 a 55)
+# --------------------------------------------------------------------------
+FINALISTS = ["hgb", "logreg", "forest"]     # decisión del Paso 50
+
+
+def oof_proba(pipe, X, y, random_state=None, cv_folds=None) -> np.ndarray:
+    """Paso 51: probabilidad de supervivencia fuera de muestra, por pasajero.
+
+    cross_val_predict reparte a los pasajeros en los mismos k pliegues y
+    predice cada uno con el modelo entrenado SIN él. El resultado es un vector
+    con una probabilidad honesta por pasajero: ninguna la emitió un modelo que
+    ya lo había visto.
+
+    Esto permite mirar matriz de confusión, curvas, calibración y errores por
+    subgrupo sin abrir el conjunto de prueba.
+
+    Advertencia: el vector mezcla k modelos distintos, uno por pliegue. Sirve
+    para diagnosticar el PROCEDIMIENTO, no para auditar un modelo concreto.
+    """
+    cv = make_cv(random_state, cv_folds)
+    return cross_val_predict(pipe, X, y, cv=cv, method="predict_proba")[:, 1]
+
+
+def oof_proba_finalists(X, y, names=None, num_features=None, cat_features=None,
+                        random_state=None, cv_folds=None) -> pd.DataFrame:
+    """Una columna de probabilidades fuera de muestra por finalista."""
+    semilla = settings.random_state if random_state is None else random_state
+    candidatos = get_candidates(semilla)
+    nombres = list(FINALISTS if names is None else names)
+    return pd.DataFrame(
+        {
+            n: oof_proba(build_pipeline(candidatos[n], num_features, cat_features),
+                         X, y, semilla, cv_folds)
+            for n in nombres
+        },
+        index=pd.RangeIndex(len(y)),
+    )
+
+
+def confusion_table(y, pred) -> pd.DataFrame:
+    """Paso 51: la matriz de confusión con los nombres del problema.
+
+    Las etiquetas importan: '47 falsos positivos' no dice nada, '47 pasajeros
+    a los que el modelo dio por supervivientes y no lo fueron' sí, porque ese
+    es el error caro declarado en la sección 2 de reports/problema_ml.md.
+    """
+    m = confusion_matrix(y, pred, labels=[0, 1])
+    return pd.DataFrame(
+        m,
+        index=["real: no sobrevivió", "real: sobrevivió"],
+        columns=["predicho: no sobrevivió", "predicho: sobrevivió"],
+    )
+
+
+def threshold_sweep(y, proba) -> pd.DataFrame:
+    """Paso 53: precisión, recall y F1 en cada umbral que cambia algo.
+
+    precision_recall_curve devuelve un punto más que umbrales (el extremo
+    donde no se predice ningún positivo); se descarta para que las cuatro
+    columnas tengan el mismo largo.
+    """
+    precision, recall, umbral = precision_recall_curve(y, proba)
+    precision, recall = precision[:-1], recall[:-1]
+    suma = precision + recall
+    f1 = np.divide(2 * precision * recall, suma,
+                   out=np.zeros_like(precision, dtype=float), where=suma > 0)
+    return pd.DataFrame({"umbral": umbral, "precision": precision,
+                         "recall": recall, "f1": f1})
+
+
+def best_threshold(y, proba, criterio: str = "f1") -> dict:
+    """Paso 53: el umbral que maximiza el criterio pedido.
+
+    0.5 es una convención, no una decisión. Este es el umbral que el criterio
+    prefiere; cuál adoptar depende del costo de cada error, no de la métrica.
+    """
+    barrido = threshold_sweep(y, proba)
+    fila = barrido.loc[barrido[criterio].idxmax()]
+    return {c: round(float(fila[c]), 4) for c in barrido.columns}
+
+
+def threshold_for_precision(y, proba, min_precision: float = 0.80) -> dict:
+    """Paso 53: el umbral con más recall entre los que alcanzan esa precisión.
+
+    La sección 2 de reports/problema_ml.md declaró que el falso positivo es el
+    error caro para la aseguradora. Maximizar la precisión sin más llevaría el
+    umbral a predecir casi nada; lo operativo es fijar un piso de precisión y,
+    dentro de lo que lo cumple, conservar el mayor recall posible.
+
+    'alcanzado' es False cuando ningún umbral llega al piso pedido: entonces
+    se devuelve el de mayor precisión disponible, que no cumple el requisito.
+    """
+    barrido = threshold_sweep(y, proba)
+    viables = barrido[barrido["precision"] >= min_precision]
+    alcanzado = not viables.empty
+    fila = (viables.loc[viables["recall"].idxmax()] if alcanzado
+            else barrido.loc[barrido["precision"].idxmax()])
+    salida = {c: round(float(fila[c]), 4) for c in barrido.columns}
+    salida["alcanzado"] = alcanzado
+    return salida
+
+
+def calibration_table(y, proba, n_bins: int = 8) -> pd.DataFrame:
+    """Paso 53: ¿la probabilidad dice la verdad?
+
+    Un modelo está calibrado si, entre los pasajeros a los que asigna 0.7,
+    sobrevivió cerca del 70 %. La tabla compara, por tramo de probabilidad, lo
+    que el modelo prometió (proba_media) con lo que ocurrió (tasa_real).
+
+    Se calcula a mano en vez de con calibration_curve porque esa función
+    descarta los tramos vacíos y no devuelve el tamaño de cada uno: sin 'n' no
+    se sabe si una desviación del 20 % son 90 pasajeros o 3.
+    """
+    datos = pd.DataFrame({"real": np.asarray(y, dtype=float),
+                          "proba": np.asarray(proba, dtype=float)})
+    cortes = np.linspace(0.0, 1.0, n_bins + 1)
+    datos["tramo"] = pd.cut(datos["proba"], bins=cortes, include_lowest=True)
+    tabla = (datos.groupby("tramo", observed=False)
+             .agg(n=("real", "size"), proba_media=("proba", "mean"),
+                  tasa_real=("real", "mean"))
+             .reset_index())
+    tabla["tramo"] = tabla["tramo"].astype(str)
+    tabla["desvio"] = (tabla["tasa_real"] - tabla["proba_media"]).round(4)
+    return tabla.round({"proba_media": 4, "tasa_real": 4})
+
+
+def brier(y, proba) -> float:
+    """Paso 53: error cuadrático medio de la probabilidad.
+
+    0 es perfecto. Un modelo que siempre responde la tasa base (0.384) obtiene
+    0.237, así que ese es el valor a batir, no 0.25.
+    """
+    return round(float(brier_score_loss(y, proba)), 4)
+
+
+def subgroup_report(X, y, pred, by: str) -> pd.DataFrame:
+    """Paso 54: exactitud, precisión y recall dentro de cada subgrupo.
+
+    Una métrica global promedia sobre grupos que el modelo trata muy distinto.
+    La columna 'n' viene siempre: una exactitud del 100 % sobre 6 pasajeros no
+    es un resultado.
+    """
+    datos = pd.DataFrame({
+        "grupo": pd.Series(X[by]).to_numpy(),
+        "real": np.asarray(y),
+        "pred": np.asarray(pred),
+    })
+    filas = [
+        {
+            "variable": by,
+            "grupo": valor,
+            "n": len(g),
+            "tasa_real": round(float(g["real"].mean()), 4),
+            "exactitud": round(float(accuracy_score(g["real"], g["pred"])), 4),
+            "precision": round(float(precision_score(g["real"], g["pred"],
+                                                     zero_division=0)), 4),
+            "recall": round(float(recall_score(g["real"], g["pred"],
+                                               zero_division=0)), 4),
+        }
+        for valor, g in datos.groupby("grupo", observed=False)
+    ]
+    return (pd.DataFrame(filas)
+            .sort_values("exactitud")
+            .reset_index(drop=True))
+
+
+def confident_errors(X, y, proba, threshold: float = 0.5, n: int = 10) -> pd.DataFrame:
+    """Paso 54: los errores en los que el modelo estaba más seguro.
+
+    Un error con probabilidad 0.51 es ruido. Uno con 0.95 significa que el
+    modelo tiene una creencia firme y equivocada, y eso suele señalar una
+    variable que falta.
+    """
+    p = np.asarray(proba, dtype=float)
+    salida = X.reset_index(drop=True).copy()
+    salida["real"] = np.asarray(y)
+    salida["proba"] = p.round(4)
+    salida["pred"] = (p >= threshold).astype(int)
+    salida["confianza"] = np.abs(p - threshold).round(4)
+    return (salida[salida["pred"] != salida["real"]]
+            .sort_values("confianza", ascending=False)
+            .head(n)
+            .reset_index(drop=True))
+
+
+def learning_curve_table(pipe, X, y, train_sizes=None,
+                         random_state=None, cv_folds=None) -> pd.DataFrame:
+    """Paso 55: ¿conviene conseguir más datos o cambiar de modelo?
+
+    Dos diagnósticos opuestos:
+    - Las dos curvas convergen en un valor BAJO -> sesgo alto: el modelo es
+      demasiado simple o faltan variables. Más datos no arreglan nada.
+    - Queda una BRECHA grande que se cierra al crecer n -> varianza alta: más
+      datos o más regularización sí ayudan.
+    """
+    cv = make_cv(random_state, cv_folds)
+    tamanos = np.linspace(0.2, 1.0, 5) if train_sizes is None else train_sizes
+    sizes, tr, va = learning_curve(pipe, X, y, cv=cv, train_sizes=tamanos,
+                                   scoring=PRIMARY_METRIC, n_jobs=1)
+    return pd.DataFrame({
+        "n_entrenamiento": sizes,
+        "train_mean": tr.mean(axis=1).round(4),
+        "train_std": tr.std(axis=1).round(4),
+        "val_mean": va.mean(axis=1).round(4),
+        "val_std": va.std(axis=1).round(4),
+        "brecha": (tr.mean(axis=1) - va.mean(axis=1)).round(4),
+    })
+
+
+# --------------------------------------------------------------------------
+# Pendientes (Partes 14 a 17)
 # --------------------------------------------------------------------------
 
 

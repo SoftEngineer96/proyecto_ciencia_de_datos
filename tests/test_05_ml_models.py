@@ -321,3 +321,174 @@ def test_cross_validate_accepts_a_custom_feature_set(toy):
         num_features=ml.NUM_FEATURES + ml.CABIN_NUM,
     )
     assert len(tabla) == len(ml.get_candidates())
+
+
+# --- Parte 13: evaluación en profundidad -------------------------------------
+
+@pytest.fixture
+def oof(toy):
+    """Probabilidades fuera de muestra de un modelo lineal sobre el toy."""
+    X, y = toy
+    pipe = ml.build_pipeline(ml.get_candidates()["logreg"])
+    return X, y, ml.oof_proba(pipe, X, y, cv_folds=3)
+
+
+def test_make_cv_defaults_come_from_settings():
+    cv = ml.make_cv()
+    assert cv.n_splits == ml.settings.cv_folds
+    assert cv.random_state == ml.settings.random_state
+    assert cv.shuffle is True
+
+
+def test_make_cv_gives_identical_folds_across_calls(toy):
+    """Si los pliegues cambiaran, el Paso 51 no sería comparable con el 48."""
+    X, y = toy
+    a = [te.tolist() for _, te in ml.make_cv(cv_folds=3).split(X, y)]
+    b = [te.tolist() for _, te in ml.make_cv(cv_folds=3).split(X, y)]
+    assert a == b
+
+
+def test_oof_proba_gives_one_probability_per_passenger(oof):
+    _X, y, proba = oof
+    assert proba.shape == (len(y),)
+    assert ((proba >= 0) & (proba <= 1)).all()
+
+
+def test_oof_proba_is_not_fitted_on_the_passenger_it_predicts(toy):
+    """Fuera de muestra: peor que en entrenamiento, y nunca perfecto."""
+    X, y = toy
+    pipe = ml.build_pipeline(ml.get_candidates()["tree"])
+    fuera = ml.oof_proba(pipe, X, y, cv_folds=3)
+    dentro = pipe.fit(X, y).predict_proba(X)[:, 1]
+    from sklearn.metrics import roc_auc_score
+    assert roc_auc_score(y, fuera) < roc_auc_score(y, dentro)
+
+
+def test_oof_proba_finalists_has_one_column_per_model(toy):
+    X, y = toy
+    tabla = ml.oof_proba_finalists(X, y, names=["logreg", "tree"], cv_folds=3)
+    assert list(tabla.columns) == ["logreg", "tree"]
+    assert len(tabla) == len(y)
+
+
+def test_confusion_table_cells_add_up_to_everyone(oof):
+    _, y, proba = oof
+    tabla = ml.confusion_table(y, (proba >= 0.5).astype(int))
+    assert tabla.to_numpy().sum() == len(y)
+    assert tabla.shape == (2, 2)
+    assert "real: sobrevivió" in tabla.index
+
+
+def test_confusion_table_keeps_both_classes_with_a_degenerate_prediction(oof):
+    """Si el modelo no predice positivos, la matriz sigue siendo 2x2."""
+    _, y, _ = oof
+    tabla = ml.confusion_table(y, np.zeros(len(y), dtype=int))
+    assert tabla.shape == (2, 2)
+    assert tabla["predicho: sobrevivió"].sum() == 0
+
+
+def test_threshold_sweep_columns_have_the_same_length(oof):
+    """precision_recall_curve devuelve un punto más que umbrales."""
+    _, y, proba = oof
+    barrido = ml.threshold_sweep(y, proba)
+    assert list(barrido.columns) == ["umbral", "precision", "recall", "f1"]
+    assert barrido.notna().all().all()
+    assert barrido["f1"].between(0, 1).all()
+
+
+def test_threshold_sweep_recall_falls_as_the_threshold_rises(oof):
+    _, y, proba = oof
+    barrido = ml.threshold_sweep(y, proba).sort_values("umbral")
+    assert barrido["recall"].is_monotonic_decreasing
+
+
+def test_best_threshold_beats_half_on_its_own_criterion(oof):
+    """El umbral elegido no puede tener peor F1 que el 0.5 por convención."""
+    _, y, proba = oof
+    from sklearn.metrics import f1_score
+    mejor = ml.best_threshold(y, proba, criterio="f1")
+    assert mejor["f1"] >= round(f1_score(y, (proba >= 0.5).astype(int)), 4) - 1e-9
+    assert 0 <= mejor["umbral"] <= 1
+
+
+def test_threshold_for_precision_reaches_the_floor(oof):
+    _, y, proba = oof
+    r = ml.threshold_for_precision(y, proba, min_precision=0.70)
+    assert r["alcanzado"] is True
+    assert r["precision"] >= 0.70
+
+
+def test_threshold_for_precision_flags_an_unreachable_floor(oof):
+    """Con un piso imposible devuelve el mejor disponible, marcado como fallido."""
+    _, y, proba = oof
+    r = ml.threshold_for_precision(y, proba, min_precision=1.01)
+    assert r["alcanzado"] is False
+
+
+def test_calibration_table_counts_every_passenger_once(oof):
+    _, y, proba = oof
+    tabla = ml.calibration_table(y, proba, n_bins=4)
+    assert len(tabla) == 4
+    assert tabla["n"].sum() == len(y)
+    assert {"tramo", "n", "proba_media", "tasa_real", "desvio"} == set(tabla.columns)
+
+
+def test_calibration_table_keeps_empty_bins(oof):
+    """calibration_curve los descarta; sin ellos no se ve dónde no hay datos."""
+    _, y, proba = oof
+    assert len(ml.calibration_table(y, proba, n_bins=20)) == 20
+
+
+def test_brier_is_zero_for_a_perfect_forecast():
+    y = np.array([0, 1, 0, 1])
+    assert ml.brier(y, y.astype(float)) == 0.0
+
+
+def test_brier_matches_the_base_rate_forecast():
+    """Predecir siempre la tasa base da p*(1-p): la vara real, no 0.25."""
+    y = np.r_[np.zeros(60), np.ones(40)]
+    assert ml.brier(y, np.full(100, 0.4)) == round(0.4 * 0.6, 4)
+
+
+def test_subgroup_report_splits_the_whole_sample(oof):
+    X, y, proba = oof
+    tabla = ml.subgroup_report(X, y, (proba >= 0.5).astype(int), by="Sex")
+    assert tabla["n"].sum() == len(y)
+    assert set(tabla["grupo"]) == set(X["Sex"])
+    assert (tabla["variable"] == "Sex").all()
+
+
+def test_subgroup_report_is_sorted_worst_first(oof):
+    """El subgrupo peor servido va arriba: es lo que hay que mirar."""
+    X, y, proba = oof
+    tabla = ml.subgroup_report(X, y, (proba >= 0.5).astype(int), by="Pclass")
+    assert tabla["exactitud"].is_monotonic_increasing
+
+
+def test_confident_errors_returns_only_errors(oof):
+    X, y, proba = oof
+    errores = ml.confident_errors(X, y, proba, n=5)
+    assert len(errores) <= 5
+    assert (errores["pred"] != errores["real"]).all()
+    assert errores["confianza"].is_monotonic_decreasing
+
+
+def test_confident_errors_does_not_mutate_the_features(oof):
+    X, y, proba = oof
+    antes = list(X.columns)
+    ml.confident_errors(X, y, proba)
+    assert list(X.columns) == antes
+
+
+def test_learning_curve_table_grows_with_the_sample(toy):
+    X, y = toy
+    pipe = ml.build_pipeline(ml.get_candidates()["logreg"])
+    tabla = ml.learning_curve_table(pipe, X, y, cv_folds=3)
+    assert len(tabla) == 5
+    assert tabla["n_entrenamiento"].is_monotonic_increasing
+    assert (tabla["brecha"] == (tabla["train_mean"] - tabla["val_mean"]).round(4)).all()
+
+
+def test_finalists_are_real_candidates():
+    """Los nombres del Paso 50 tienen que existir en get_candidates()."""
+    assert set(ml.FINALISTS) <= set(ml.get_candidates())
