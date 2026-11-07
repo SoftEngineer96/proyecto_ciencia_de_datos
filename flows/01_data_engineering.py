@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 from flows.common.logging import get_logger
@@ -94,9 +95,20 @@ def cast_types(df: pd.DataFrame) -> pd.DataFrame:
 # Transformaciones pendientes (ver docs/GUIA.md)
 # --------------------------------------------------------------------------
 def add_person(df: pd.DataFrame) -> pd.DataFrame:
-    """Paso 8: columna Person (male / female / child) a partir de la edad ORIGINAL."""
-    return df  # TODO Paso 8
+    """Paso 8: 'child' si Age < 16; si no, el valor de Sex.
 
+    Regla explícita para edad desconocida: en NumPy y pandas, NaN < 16 es
+    False, así que un pasajero sin edad NUNCA queda marcado como 'child' y
+    conserva su sexo. Eso subestima a los niños sin edad registrada —el sesgo
+    se cuantifica en el Reto 8.1—, pero aquí la regla está documentada y
+    probada en lugar de ocurrir en silencio.
+
+    Va antes de impute_age en build_silver a propósito: Person debe calcularse
+    sobre la edad ORIGINAL, no sobre una imputada.
+    """
+    out = df.copy()
+    out["Person"] = np.where(out["Age"] < 16, "child", out["Sex"])
+    return out
 
 def add_cabin_features(df: pd.DataFrame) -> pd.DataFrame:
     """Pasos 11 y 24: TCabin (cubierta, X si desconocida) y HasCabin (0/1)."""

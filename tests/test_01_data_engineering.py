@@ -81,6 +81,27 @@ def test_cast_types_keeps_age_nulls(sample):
     assert out["Age"].isna().sum() == 2
 
 
+# --- Person (Paso 8) -------------------------------------------------------
+
+def test_add_person_is_explicit_about_unknown_age(sample):
+    """Prueba del enunciado: los dos pasajeros sin edad conservan su sexo."""
+    out = de.add_person(sample)
+    assert out["Person"].tolist() == ["male", "female", "female", "child", "female", "male"]
+
+
+def test_add_person_uses_original_age_not_imputed(sample):
+    """NaN < 16 es False: sin edad nunca hay 'child'. Regla documentada, no accidental."""
+    out = de.add_person(sample)
+    sin_edad = out[out["Age"].isna()]
+    assert (sin_edad["Person"] == sin_edad["Sex"]).all()
+    assert "child" not in sin_edad["Person"].tolist()
+
+
+def test_add_person_does_not_mutate_input(sample):
+    de.add_person(sample)
+    assert "Person" not in sample.columns
+
+
 # --- Salida ----------------------------------------------------------------
 
 def test_drop_original_columns_returns_a_copy(sample):
