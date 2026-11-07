@@ -1,11 +1,200 @@
-# Conclusiones del análisis exploratorio
+# Conclusiones del análisis exploratorio del Titanic
 
-Bitácora de hallazgos sobre los 891 pasajeros etiquetados de la capa Silver.
-Se escribe a medida que avanza el taller; la Parte 9 la reorganiza como
-argumento, con la estratificación que exige separar efectos confundidos.
+**Destinatario:** Gerencia · **Objetivo:** identificar qué características
+alteraron la probabilidad de sobrevivir, como insumo para modelos de riesgo y
+protocolos de evacuación.
+
+**Base de datos:** 891 pasajeros con desenlace conocido. Sobrevivieron 342
+(38.4 %).
 
 ---
 
+## 1. Hallazgos
+
+### 1.1 El sexo es el factor dominante, por amplio margen
+
+Sobrevivió el **74.2 % de las mujeres** (233 de 314) frente al **18.9 % de los
+hombres** (109 de 577). La diferencia es estadísticamente inequívoca
+(chi-cuadrado = 260.7; p ≈ 1.2 × 10⁻⁵⁸).
+
+El caso más ilustrativo son cuatro miembros de la familia Fortune, en primera
+clase, con la misma tarifa de 263.00 y el mismo camarote: **las dos mujeres
+sobrevivieron, los dos hombres no**. Misma clase, misma riqueza, mismo grupo
+familiar; la única variable que difiere es el sexo, y predice el resultado por
+completo.
+
+### 1.2 La clase no sustituye al sexo: lo modula
+
+Las dos reglas actuaron a la vez. Tasas por clase y tipo de pasajero, con el
+número de personas detrás de cada cifra:
+
+| | 1ª clase | 2ª clase | 3ª clase |
+|---|---|---|---|
+| **Niños** (<16) | 83.3 % (5/6) | **100 % (19/19)** | 43.1 % (25/58) |
+| **Mujeres** | 97.8 % (89/91) | 90.9 % (60/66) | 49.1 % (56/114) |
+| **Hombres** | 35.3 % (42/119) | 8.1 % (8/99) | 11.9 % (38/319) |
+
+Dos lecturas operativas:
+
+- **"Mujeres y niños primero" se aplicó dentro de cada clase, no entre
+  clases.** Los 19 niños de segunda sobrevivieron todos; de los 58 de tercera,
+  25.
+- **Una mujer de tercera clase (49.1 %) tuvo mejor pronóstico que un hombre de
+  primera (35.3 %).** El sexo pesó más que la riqueza en los extremos de la
+  jerarquía.
+
+### 1.3 Los mayores de 65 años fueron el grupo más vulnerable
+
+De los 11 pasajeros por encima de 64.8 años, **sobrevivió uno** (9.1 %), frente
+al 38.8 % del resto. Es la tasa más baja de cualquier subgrupo identificado.
+
+El número es pequeño, pero la dirección es consistente con el resto del
+análisis: la evacuación favoreció a quienes podían desplazarse con autonomía.
+
+### 1.4 Pagar más ayudó, pero solo en primera y segunda clase
+
+Dividiendo la tarifa en cuartiles **dentro de cada clase**, para comparar
+pasajeros equivalentes entre sí:
+
+| Cuartil de tarifa | 1ª clase | 2ª clase | 3ª clase |
+|---|---|---|---|
+| Más barato | 46.3 % | 34.5 % | 22.7 % |
+| Más caro | 73.6 % | 59.0 % | 28.3 % |
+| **Diferencia** | **+27 pts** | **+25 pts** | **+6 pts** |
+
+Dentro de primera y segunda clase, la tarifa aporta información que la clase
+por sí sola no captura. En tercera clase prácticamente no la aporta.
+
+Una explicación plausible —que estos datos no permiten confirmar— es que una
+tarifa mayor significara un camarote mejor ubicado respecto de la cubierta de
+botes, diferencia que en tercera clase no existía.
+
+### 1.5 El tamaño del grupo familiar describe una U invertida
+
+| Familiares a bordo | 0 | 1 | 2 | 3 | 4–6 | 7 o 10 |
+|---|---|---|---|---|---|---|
+| Tasa | 30.4 % | 55.3 % | 57.8 % | **72.4 %** | 13–33 % | **0 %** |
+| Pasajeros | 537 | 161 | 102 | 29 | 49 | 13 |
+
+Viajar acompañado por **uno a tres familiares** se asocia con el mejor
+pronóstico. De los 13 pasajeros con siete o más familiares a bordo, **ninguno
+sobrevivió**.
+
+Los grupos de cuatro o más tienen entre 6 y 22 pasajeros, así que sus tasas
+intermedias son poco confiables. La afirmación sólida es la de los extremos.
+
+---
+
+## 2. Decisiones de limpieza y su sesgo
+
+Ninguna decisión sobre datos faltantes es neutral. Estas son las cuatro que
+afectan la lectura de los resultados anteriores.
+
+**Edad imputada en el 20 % de los registros.** Faltaban 177 de 891 edades. Se
+rellenaron con el promedio del propio género. La consecuencia medida: la
+desviación estándar cae de 14.53 a 13.01 y el rango intercuartílico se reduce
+entre 26 % y 33 %. **Los datos parecen más precisos de lo que son.** Cualquier
+intervalo de confianza calculado sobre la edad imputada sale artificialmente
+estrecho. Por eso se conservó la edad original en una columna aparte, y todos
+los análisis de edad de este informe usan los 714 valores reales.
+
+**Los niños sin edad registrada no se contaron como niños.** La regla clasifica
+como niño a quien tiene menos de 16 años; un registro sin edad conserva su
+sexo. Se estima que esto deja fuera unos **21 niños**, un subconteo cercano al
+25 % sobre los 83 identificados. La cifra del punto 1.2 para niños está, por
+tanto, subestimada en número aunque no necesariamente en tasa.
+
+**El título "Master" (niño varón) se fundió con "Mr".** La decisión mezcla
+niños con adultos en la variable de título. Es admisible **solo porque existe
+una variable separada que distingue a los menores de 16**; sin ella, borraría
+una distinción que el análisis demostró decisiva.
+
+**La cabina desconocida se convirtió en una categoría propia, "X", en lugar de
+eliminarse.** Faltaba en 687 de 891 registros (77.1 %), así que eliminarlos
+habría descartado tres cuartas partes de la muestra. Además, la ausencia del
+dato **no es aleatoria**: falta en el 18.5 % de primera clase y en el 97.6 %
+de tercera. El hecho de que no haya cabina registrada es, en sí mismo,
+información sobre el pasajero.
+
+---
+
+## 3. Confusiones detectadas y cómo se separaron
+
+Tres variables parecían explicar la supervivencia por sí solas y resultaron
+estar entrelazadas con la clase. El método para separarlas fue **estratificar**:
+comparar dentro de cada nivel de la clase, en lugar de comparar en bruto.
+
+**Puerto de embarque — confusión parcial.** Sin controlar nada, Cherburgo
+(55.4 %, n=168) parecía muy superior a Southampton (33.9 %, n=646). La causa
+aparente: Cherburgo embarcó un 50.6 % de pasajeros de primera y Queenstown un
+93.5 % de tercera.
+
+Al estratificar, la brecha en primera clase se reduce de 21.5 a 10.5 puntos.
+**Pero en tercera clase persiste y es grande:** 37.9 % en Cherburgo y 37.5 %
+en Queenstown, frente a 19.0 % en Southampton, con 66, 72 y 354 pasajeros
+respectivamente. La confusión explicaba parte del efecto, no todo. Queda un
+residuo sin explicación que este análisis no puede resolver.
+
+**Tarifa — confusión parcial.** La tarifa está fuertemente determinada por la
+clase (correlación de 0.75 con la cubierta registrada, y distribuciones
+claramente separadas por clase). Pero al dividirla en cuartiles dentro de cada
+clase, conserva señal propia en primera y segunda, como muestra el punto 1.4.
+
+**Título del nombre — redundancia casi total con el sexo.** La correlación
+entre ambas variables codificadas es de −0.80: "Mr" es hombre, "Mrs" y "Miss"
+son mujeres. El título aparece como segundo mejor predictor sin aportar
+información nueva. **Para un modelo, incluir ambas sería duplicar la misma
+variable.**
+
+**Una advertencia metodológica adicional.** La edad muestra una correlación
+lineal de −0.08 con la supervivencia, prácticamente nula, y sin embargo sí
+predice: los varones del tramo más joven sobrevivieron en torno al 52 % y los
+del tramo de los 20 años al 14 %. La relación existe, pero no es una línea
+recta, y la correlación no la detecta. **Descartar variables por su correlación
+baja habría eliminado una variable informativa.**
+
+---
+
+## 4. Qué NO podemos afirmar
+
+**Asociación no es causalidad.** Todo lo anterior describe patrones observados,
+no mecanismos. Que ser mujer se asocie con sobrevivir no demuestra que el sexo
+fuera la causa: lo más probable es que mediara un protocolo de evacuación
+aplicado por la tripulación, que no está en los datos.
+
+**Un solo naufragio.** Los resultados describen un evento ocurrido en 1912, con
+su tripulación, su protocolo y sus circunstancias. No son extrapolables a otros
+siniestros marítimos ni a escenarios de riesgo contemporáneos sin evidencia
+adicional.
+
+**La muestra está incompleta.** Se analizaron 891 de los 1 309 pasajeros
+registrados; los 418 restantes no tienen desenlace conocido y quedaron fuera.
+**La tripulación no está incluida en absoluto**, pese a haber sido parte
+sustancial de las víctimas.
+
+**Faltan variables determinantes.** Los datos no registran la ubicación física
+del camarote, la condición física del pasajero, si sabía nadar, su posición en
+el barco al momento del impacto, ni a qué bote accedió. Cualquiera de esas
+variables podría explicar buena parte de lo que aquí se atribuye a la clase o
+a la tarifa.
+
+**Algunos subgrupos son demasiado pequeños para sostener conclusiones.** Las
+celdas de Queenstown en primera y segunda clase tienen 2 y 3 pasajeros. Los
+niños de primera clase son 6. Los grupos familiares de cuatro o más tienen
+entre 6 y 22. Las tasas de esos subgrupos se reportan por completitud, no como
+evidencia.
+
+**Los valores atípicos no son errores.** Los 116 pasajeros con tarifa atípica y
+los 11 con edad atípica corresponden a personas reales. No se eliminó ninguno:
+la regla del rango intercuartílico señala candidatos a revisar, no registros a
+descartar.
+
+---
+
+# Anexo — Bitácora de hallazgos
+
+Notas de trabajo registradas a medida que avanzó el análisis. Sustentan las
+afirmaciones del informe anterior y conservan el detalle metodológico.
 ## H1. Los datos faltantes de `Cabin` no son aleatorios (Paso 5)
 
 `Cabin` falta en 687 de 891 pasajeros (77.10 %), `Age` en 177 (19.87 %) y
@@ -329,3 +518,106 @@ casi 17 veces la mediana.
    cuadrado y un punto lejano pesa mucho más que uno cercano.
 3. **El remedio habitual es transformar**, por ejemplo con `log(1 + Fare)`, que
    comprime la cola y acerca la distribución a la simetría.
+
+## H20. La confusión puerto-clase es PARCIAL, no total (Paso 35)
+
+Sin estratificar, Cherburgo (55.4 %, n=168) parece muy superior a Southampton
+(33.9 %, n=646). Estratificando por clase:
+
+| | 1ª | 2ª | 3ª |
+|---|---|---|---|
+| C | 0.694 (n=85) | 0.529 (n=17) | 0.379 (n=66) |
+| Q | 0.500 (n=**2**) | 0.667 (n=**3**) | 0.375 (n=72) |
+| S | 0.589 (n=127) | 0.463 (n=165) | 0.190 (n=354) |
+
+**En primera clase la brecha C−S cae de 21.5 a 10.5 puntos**: buena parte del
+efecto era composición por clase, como anticipaba H5.
+
+**Pero en tercera clase persiste y es grande:** C 37.9 % y Q 37.5 % frente a
+S 19.0 %, con 66, 72 y 354 pasajeros respectivamente. Esa diferencia no la
+explica la clase, porque la comparación ya es dentro de la misma clase.
+
+**Corrección a H5.** El puerto no era únicamente un indicador de la clase.
+Queda un efecto residual en tercera que exige otra explicación y que este
+análisis no puede dar.
+
+**Reserva.** Las celdas Q×1ª y Q×2ª son 2 y 3 pasajeros: no sostienen ninguna
+afirmación pese a mostrar tasas de 0.500 y 0.667.
+
+## H21. La tarifa aporta señal propia, pero solo en primera y segunda (Paso 36)
+
+Cuartiles de tarifa calculados dentro de cada clase:
+
+| FareQ | 1ª | 2ª | 3ª |
+|---|---|---|---|
+| 0 (más barato) | 0.463 | 0.345 | 0.227 |
+| 1 | 0.574 | 0.500 | 0.200 |
+| 2 | 0.745 | 0.585 | 0.276 |
+| 3 (más caro) | 0.736 | 0.590 | 0.283 |
+
+Pagar más se asocia con **+27 puntos en primera** y **+25 en segunda**, pero
+solo **+6 en tercera**, y de forma no creciente.
+
+**Corrección a H10.** `Fare` no es solo `Pclass` disfrazada: dentro de las
+clases altas tiene información propia. Una hipótesis plausible —que este
+análisis no puede verificar— es que más tarifa significara un camarote mejor
+ubicado respecto de la cubierta de botes. En tercera clase esa diferencia no
+existía.
+
+## H22. El tamaño familiar describe una U invertida (Paso 37)
+
+| Familiares | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 10 |
+|---|---|---|---|---|---|---|---|---|---|
+| Tasa | 0.304 | 0.553 | 0.578 | **0.724** | 0.200 | 0.136 | 0.333 | 0.000 | 0.000 |
+| n | 537 | 161 | 102 | 29 | 15 | 22 | 12 | 6 | 7 |
+
+La supervivencia sube de 30 % viajando solo hasta **72 % con tres familiares**
+y se desploma después: de los 13 pasajeros con 7 o 10 familiares a bordo, **no
+sobrevivió ninguno**.
+
+**Reserva sobre la confiabilidad.** A partir de 4 familiares los grupos tienen
+entre 6 y 22 pasajeros y los intervalos de confianza del gráfico de puntos
+abarcan rangos enormes. La única afirmación sólida en esa zona es el 0 de 13
+en los grupos más numerosos.
+
+**Confusión no resuelta.** Las familias más grandes viajaban en tercera clase,
+así que el desplome puede ser clase y no tamaño familiar. Separarlo exigiría
+estratificar también aquí, y los grupos quedarían demasiado pequeños.
+
+## H23. Los atípicos no son errores, y los de edad fueron los más vulnerables (Paso 38)
+
+| Columna | Atípicos | % | Tasa atípicos | Tasa resto |
+|---|---|---|---|---|
+| `Fare` | 116 | 13.0 % | 0.681 | 0.339 |
+| `Age` (sobre `AgeOriginal`) | 11 | 1.5 % | **0.091** | 0.388 |
+| `Familia` | 91 | 10.2 % | 0.341 | 0.389 |
+
+Los atípicos de tarifa sobrevivieron al doble, pero eso es `Pclass`: son casi
+todos de primera.
+
+Los 11 atípicos de edad son los mayores de 64.8 años, y **sobrevivió solo 1**.
+Es el grupo con peor resultado del barco.
+
+**Ninguno de estos 218 registros es un error.** Una tarifa de 512 la pagaron
+tres personas reales; una edad de 80 años la tenía un pasajero real. La regla
+del IQR señala candidatos a revisar, no filas a eliminar.
+
+## H24. El caso Fortune: la misma billetera, distinto desenlace (Paso 38)
+
+Cuatro miembros de la familia Fortune viajaban en primera clase con la misma
+tarifa de 263.00 y los mismos 5 familiares a bordo:
+
+| Pasajero | Sexo | Sobrevivió |
+|---|---|---|
+| Fortune, Miss. Mabel Helen | female | Sí |
+| Fortune, Miss. Alice Elizabeth | female | Sí |
+| Fortune, Mr. Charles Alexander | male | No |
+| Fortune, Mr. Mark | male | No |
+
+Misma clase, misma tarifa, misma familia, mismo camarote. La única variable
+que difiere es el sexo, y predice el resultado perfectamente.
+
+Es la ilustración más limpia del hallazgo central del análisis: por encima de
+la riqueza y de la clase, el protocolo de evacuación operó sobre el sexo.
+
+
