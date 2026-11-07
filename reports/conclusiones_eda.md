@@ -121,3 +121,68 @@ Solo 204 de 891 pasajeros (22.9 %) tienen cabina registrada. La cubierta `T`
 aparece con **un solo pasajero**: se excluye de los gráficos por ser un grupo
 de tamaño 1, pero la fila se conserva intacta en Silver. Es un problema de
 estadística, no de calidad del dato.
+
+---
+
+## H7. "Mujeres y niños primero" operó dentro de cada clase, no entre ellas (Paso 18)
+
+| | 1ª | 2ª | 3ª |
+|---|---|---|---|
+| child | 0.833 (5/6) | 1.000 (19/19) | 0.431 (25/58) |
+| female | 0.978 (89/91) | 0.909 (60/66) | 0.491 (56/114) |
+| male | 0.353 (42/119) | 0.081 (8/99) | 0.119 (38/319) |
+
+- Los 19 niños de segunda clase sobrevivieron todos; de los 58 de tercera,
+  25.
+- El peor grupo del barco son los hombres de segunda clase: 8 de 99 (8.1 %),
+  por debajo incluso de los de tercera (11.9 %). Es contraintuitivo y requiere
+  explicación, no solo reporte.
+- Una mujer de tercera (49.1 %) tuvo mejores probabilidades que un hombre de
+  primera (35.3 %).
+
+**Reserva.** El grupo `child` de primera clase son 6 pasajeros: su intervalo de
+confianza va de 0.50 a 1.00 y no sostiene ninguna afirmación.
+
+---
+
+## H8. La recta de regresión predice valores imposibles (Paso 19)
+
+Con `Survived` binaria, `lmplot` ajusta una recta que cruza el cero: para
+tercera clase, la línea cae por debajo de 0 pasados los 70 años, y el eje del
+gráfico llega a −0.2.
+
+Una tasa de supervivencia negativa no existe. Es la limitación de ajustar un
+modelo lineal a una variable acotada en [0, 1], y la razón por la que el
+modelado posterior usa regresión logística.
+
+---
+
+## H9. El patrón por edad no es lineal, y la recta lo oculta (Paso 19)
+
+Agrupando con `x_bins`:
+
+- **Varones:** el primer intervalo de edad está en torno a 0.52, muy por
+  encima de la recta (~0.30), y cae a ~0.14 en el tramo de los 20. "Niños
+  primero" aplicó a los varones, pero solo mientras fueron niños.
+- **Mujeres:** la tasa sube con la edad, de ~0.65 a ~0.93.
+
+**Hipótesis a verificar, no hallazgo.** El segundo patrón puede estar
+confundido por la clase: las mujeres mayores tenían más probabilidad de viajar
+en primera. Debe estratificarse antes de interpretarse.
+
+Los intervalos de confianza del tramo de 80 años abarcan casi todo el rango
+[0, 1]: son muy pocos pasajeros y el gráfico lo señala.
+
+---
+
+## H10. La tarifa está determinada por la clase (Paso 20)
+
+En la dispersión tarifa-edad coloreada por clase, la tercera clase se agrupa
+en tarifas bajas mientras la primera se dispersa por todo el rango. Hay dos o
+tres pasajeros con tarifa cercana a 512 frente a una mediana de 14.45; se
+tratan formalmente en el Paso 38.
+
+`Fare` es la tercera variable confundida con `Pclass`, después de `Sex` (H2) y
+`Embarked` (H5). Si `Fare` predice la supervivencia, buena parte de ese poder
+es `Pclass` disfrazada.
+
