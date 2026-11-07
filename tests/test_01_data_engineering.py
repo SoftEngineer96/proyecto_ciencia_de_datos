@@ -139,6 +139,20 @@ def test_alone_is_consistent_with_familia(sample):
     assert ((out["Familia"] == 0) == (out["Alone"] == "Alone")).all()
 
 
+# --- Etiqueta de supervivencia (Paso 16) -----------------------------------
+
+def test_add_survivor_label(sample):
+    out = de.add_survivor_label(sample)
+    assert out["Survivor"].tolist() == ["No", "Yes", "Yes", "No", "Yes", "No"]
+
+
+def test_survived_stays_numeric_so_its_mean_is_the_rate(sample):
+    """La media de Survived es la tasa de supervivencia: no debe volverse texto."""
+    out = de.add_survivor_label(sample)
+    assert out["Survived"].dtype.kind in "iu"
+    assert out["Survived"].mean() == pytest.approx(0.5)
+
+
 # --- Pureza de todas las transformaciones ya implementadas -----------------
 
 def test_functions_do_not_mutate_their_input(sample):

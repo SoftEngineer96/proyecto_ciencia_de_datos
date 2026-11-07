@@ -149,9 +149,17 @@ def add_family_features(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def add_survivor_label(df: pd.DataFrame) -> pd.DataFrame:
-    """Paso 16: Survivor, etiqueta legible de Survived."""
-    return df  # TODO Paso 16
+    """Paso 16: Survivor, etiqueta legible de Survived (0 -> 'No', 1 -> 'Yes').
 
+    Es solo para rotular gráficos de conteo. Survived se conserva numérica
+    porque su media ES la tasa de supervivencia: con valores 0 y 1,
+    df['Survived'].mean() da directamente la proporción de supervivientes.
+    Esa es la columna que usan los gráficos que promedian (catplot de puntos,
+    lmplot); Survivor solo sirve para las etiquetas.
+    """
+    out = df.copy()
+    out["Survivor"] = out["Survived"].map({0: "No", 1: "Yes"})
+    return out
 
 def add_title(df: pd.DataFrame) -> pd.DataFrame:
     """Paso 25: TTitulo, extraído de Name."""
