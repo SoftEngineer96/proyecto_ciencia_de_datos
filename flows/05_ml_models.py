@@ -9,10 +9,15 @@ NotImplementedError en vez de devolver la entrada: no forman una cadena de
 """
 from __future__ import annotations
 
+import json
+import platform
+from datetime import UTC, datetime
 from pathlib import Path
 
+import joblib
 import numpy as np
 import pandas as pd
+import sklearn
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.compose import ColumnTransformer
 from sklearn.dummy import DummyClassifier
@@ -29,6 +34,7 @@ from sklearn.metrics import (
     precision_recall_curve,
     precision_score,
     recall_score,
+    roc_auc_score,
 )
 from sklearn.model_selection import (
     GridSearchCV,
@@ -45,8 +51,9 @@ from sklearn.preprocessing import OneHotEncoder, StandardScaler
 from sklearn.tree import DecisionTreeClassifier
 
 from flows.common.config import settings
+from flows.common.hashing import sha256_of
 from flows.common.logging import get_logger
-from flows.common.paths import SILVER, SILVER_NAME
+from flows.common.paths import MODELS, SILVER, SILVER_NAME
 
 log = get_logger(__name__)
 
@@ -828,10 +835,224 @@ def ablation(X, y, name: str = "hgb", params: dict | None = None,
 
 
 # --------------------------------------------------------------------------
-# Pendientes (Partes 16 y 17)
+# Parte 16 — evaluación final sobre el conjunto de prueba (Pasos 62 y 63)
 # --------------------------------------------------------------------------
+def evaluate_on_test(pipeline, X_test, y_test, threshold: float = 0.5) -> dict:
+    """Paso 62: la evaluación final. Se ejecuta UNA vez.
+
+    Todo lo anterior se decidió con validación cruzada sobre el entrenamiento.
+    Esta es la primera y única vez que el conjunto de prueba participa.
+
+    Si el resultado decepciona, NO se vuelve atrás a ajustar nada: hacerlo
+    convertiría la prueba en un segundo conjunto de validación y la cifra
+    dejaría de estimar el desempeño con datos nuevos. Se documenta tal cual.
+
+    El dict es serializable a JSON para entrar en los metadatos del modelo.
+    """
+    proba = pipeline.predict_proba(X_test)[:, 1]
+    pred = (proba >= threshold).astype(int)
+    return {
+        "accuracy": round(float(accuracy_score(y_test, pred)), 4),
+        "precision": round(float(precision_score(y_test, pred, zero_division=0)), 4),
+        "recall": round(float(recall_score(y_test, pred, zero_division=0)), 4),
+        "f1": round(float(f1_score(y_test, pred, zero_division=0)), 4),
+        "roc_auc": round(float(roc_auc_score(y_test, proba)), 4),
+        "brier": round(float(brier_score_loss(y_test, proba)), 4),
+        "threshold": float(threshold),
+        "n_test": len(X_test),
+    }
 
 
-def final_report(X_test, y_test):
-    """Parte 16: evaluación única sobre el conjunto de prueba."""
-    raise NotImplementedError("Parte 16")
+def _metric_value(metric: str, y, proba, threshold: float) -> float:
+    """Una métrica por nombre, sobre etiquetas y probabilidades."""
+    if metric == "roc_auc":
+        return float(roc_auc_score(y, proba))
+    if metric == "brier":
+        return float(brier_score_loss(y, proba))
+    pred = (np.asarray(proba) >= threshold).astype(int)
+    if metric == "accuracy":
+        return float(accuracy_score(y, pred))
+    funcion = {"precision": precision_score, "recall": recall_score,
+               "f1": f1_score}[metric]
+    return float(funcion(y, pred, zero_division=0))
+
+
+def bootstrap_ci(y_test, proba, metric: str = "roc_auc", threshold: float = 0.5,
+                 n_boot: int = 1000, alpha: float = 0.05,
+                 random_state=None) -> dict:
+    """Paso 62: intervalo de confianza por bootstrap sobre los pares (y, proba).
+
+    Un número solo no dice cuánto puede moverse. Se remuestrean con reemplazo
+    los pares (etiqueta, probabilidad), se recalcula la métrica en cada
+    remuestreo y se toman los percentiles 2.5 y 97.5.
+
+    Con unos 180 pasajeros de prueba el intervalo sale ancho, y esa es la
+    lección: una diferencia de dos o tres puntos entre dos modelos medida
+    sobre una muestra así no distingue nada.
+
+    Los remuestreos que caen con una sola clase se descartan: el ROC-AUC no
+    está definido sobre ellos.
+    """
+    semilla = settings.random_state if random_state is None else random_state
+    rng = np.random.default_rng(semilla)
+    y = np.asarray(y_test)
+    p = np.asarray(proba)
+    n = len(y)
+
+    valores = []
+    for _ in range(n_boot):
+        idx = rng.integers(0, n, n)
+        if len(np.unique(y[idx])) < 2:
+            continue
+        valores.append(_metric_value(metric, y[idx], p[idx], threshold))
+
+    muestra = np.asarray(valores)
+    bajo, alto = np.percentile(muestra, [100 * alpha / 2, 100 * (1 - alpha / 2)])
+    return {
+        "metrica": metric,
+        "estimacion": round(_metric_value(metric, y, p, threshold), 4),
+        "ic_bajo": round(float(bajo), 4),
+        "ic_alto": round(float(alto), 4),
+        "amplitud": round(float(alto - bajo), 4),
+        "n_remuestreos": len(muestra),
+    }
+
+
+# --------------------------------------------------------------------------
+# Parte 17 — decisiones congeladas y modelo final (Pasos 64 a 68)
+# --------------------------------------------------------------------------
+# Resultado del cuaderno 04. Cada una está justificada en reports/problema_ml.md,
+# y vive aquí —bajo control de versiones— y no en la memoria de quien la tomó.
+MODEL_NAME = "titanic_model_v1"
+FINAL_ESTIMATOR = "hgb"                 # Paso 50,  sección 6
+FINAL_PARAMS = {                        # Paso 57,  sección 8.6
+    "model__l2_regularization": 1.0,
+    "model__learning_rate": 0.1,
+    "model__max_depth": 4,
+    "model__max_iter": 200,
+}
+USE_CABIN_FEATURES = False              # Paso 61,  sección 9.4
+THRESHOLD = 0.50                        # Paso 53,  secciones 7.2 y 8.6
+
+
+def final_features() -> tuple[list, list]:
+    """Las listas de variables que resultan de USE_CABIN_FEATURES."""
+    if USE_CABIN_FEATURES:
+        return NUM_FEATURES + CABIN_NUM, CAT_FEATURES + CABIN_CAT
+    return list(NUM_FEATURES), list(CAT_FEATURES)
+
+
+def train_final(X: pd.DataFrame, y: pd.Series) -> Pipeline:
+    """Paso 65: el pipeline con las decisiones congeladas, entrenado con TODO (X, y).
+
+    Se entrena con todos los datos etiquetados disponibles, prueba incluida.
+    No es trampa: el procedimiento ya fue validado y su desempeño esperado es
+    el que midió la Parte 16. Más datos suelen dar un modelo algo mejor, y
+    desaprovecharlos no tendría sentido una vez terminada la investigación.
+    """
+    num, cat = final_features()
+    modelo = get_candidates(settings.random_state)[FINAL_ESTIMATOR]
+    return build_pipeline(modelo, num, cat).set_params(**FINAL_PARAMS).fit(X, y)
+
+
+def save_model(pipeline: Pipeline, metadata: dict, name: str = MODEL_NAME,
+               models_dir: Path = MODELS) -> Path:
+    """Paso 66: guarda el pipeline (.joblib) y sus metadatos (.metadata.json).
+
+    Un modelo sin metadatos no es auditable: dentro de seis meses nadie podrá
+    decir con qué datos se entrenó ni con qué versiones. La huella SHA-256 del
+    archivo de datos y las versiones de las librerías son lo que permite
+    reproducirlo o descartar que el entorno cambió.
+    """
+    models_dir = Path(models_dir)
+    models_dir.mkdir(parents=True, exist_ok=True)
+    model_path = models_dir / f"{name}.joblib"
+    joblib.dump(pipeline, model_path)
+
+    meta = {
+        **metadata,
+        "name": name,
+        # El enunciado usa datetime.timezone.utc; aquí se usa el alias UTC
+        # porque ruff (UP017) lo exige desde Python 3.11. Es el mismo valor.
+        "saved_at": datetime.now(UTC).isoformat(),
+        "python_version": platform.python_version(),
+        "sklearn_version": sklearn.__version__,
+        "pandas_version": pd.__version__,
+        "model_sha256": sha256_of(model_path),
+    }
+    (models_dir / f"{name}.metadata.json").write_text(
+        json.dumps(meta, indent=2, ensure_ascii=False, default=str), encoding="utf-8"
+    )
+    log.info("Modelo guardado en %s", model_path)
+    return model_path
+
+
+def load_model(path: Path) -> tuple[Pipeline, dict]:
+    """Paso 66: carga el pipeline y sus metadatos.
+
+    Avisa si la versión de scikit-learn cambió: un modelo guardado con una
+    versión puede no abrirse, o comportarse distinto, con otra.
+
+    SEGURIDAD: un .joblib puede ejecutar código al cargarse, igual que un
+    pickle. Nunca cargues un modelo de una fuente que no controles.
+    """
+    path = Path(path)
+    pipeline = joblib.load(path)
+    meta = json.loads(path.with_suffix(".metadata.json").read_text(encoding="utf-8"))
+    if meta.get("sklearn_version") != sklearn.__version__:
+        log.warning("Modelo entrenado con scikit-learn %s; versión actual %s",
+                    meta.get("sklearn_version"), sklearn.__version__)
+    return pipeline, meta
+
+
+def predict(pipeline: Pipeline, X: pd.DataFrame,
+            threshold: float = THRESHOLD) -> pd.DataFrame:
+    """Paso 67: probabilidad y etiqueta para cada fila de X.
+
+    El umbral viaja con el modelo: usar 0.5 por costumbre descartaría la
+    decisión de la sección 7.2, que lo fijó según el costo de cada error.
+    """
+    proba = pipeline.predict_proba(X)[:, 1]
+    return pd.DataFrame({"proba_survive": proba,
+                         "pred": (proba >= threshold).astype(int)},
+                        index=X.index)
+
+
+def run(in_dir: Path | None = None, models_dir: Path = MODELS) -> Path:
+    """Paso 68: Silver -> evaluación honesta -> modelo final entrenado y guardado.
+
+    Dos entrenamientos con propósitos distintos:
+
+    1. Con X_train, para evaluar UNA vez sobre X_test. Esa es la cifra que se
+       reporta como desempeño esperado.
+    2. Con todos los datos etiquetados, para producir el artefacto que se
+       guarda. No se evalúa: su desempeño esperado es el del paso 1.
+    """
+    ruta_silver = Path(in_dir) / SILVER_NAME if in_dir else SILVER / SILVER_NAME
+    X, y = load_dataset(ruta_silver)
+
+    X_tr, X_te, y_tr, y_te = split(X, y)
+    pipe_eval = train_final(X_tr, y_tr)
+    proba_te = pipe_eval.predict_proba(X_te)[:, 1]
+    metricas = evaluate_on_test(pipe_eval, X_te, y_te, THRESHOLD)
+    metricas["roc_auc_ic95"] = bootstrap_ci(y_te, proba_te, "roc_auc")
+    metricas["accuracy_ic95"] = bootstrap_ci(y_te, proba_te, "accuracy", THRESHOLD)
+    log.info("PRUEBA  roc_auc=%.4f [%.4f, %.4f]  exactitud=%.4f  n=%d",
+             metricas["roc_auc"], metricas["roc_auc_ic95"]["ic_bajo"],
+             metricas["roc_auc_ic95"]["ic_alto"], metricas["accuracy"],
+             metricas["n_test"])
+
+    pipeline = train_final(X, y)
+    num, cat = final_features()
+    metadata = {
+        "estimator": FINAL_ESTIMATOR,
+        "params": FINAL_PARAMS,
+        "features": {"numericas": num, "categoricas": cat},
+        "target": TARGET,
+        "threshold": THRESHOLD,
+        "random_state": settings.random_state,
+        "n_train": len(X),
+        "data_sha256": sha256_of(ruta_silver),
+        "metrics": metricas,
+    }
+    return save_model(pipeline, metadata, models_dir=models_dir)

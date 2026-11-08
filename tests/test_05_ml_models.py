@@ -3,10 +3,13 @@
 Se añaden a medida que se implementan las funciones de flows/05_ml_models.py.
 """
 import importlib
+import json
 
 import numpy as np
 import pandas as pd
 import pytest
+
+from flows.common.hashing import sha256_of
 
 ml = importlib.import_module("flows.05_ml_models")
 
@@ -670,3 +673,160 @@ def test_ablation_without_sex_also_removes_it_from_the_imputer():
     pipe = ml.build_pipeline(ml.get_candidates()["logreg"], *cfg)
     pipe.set_params(age_imputer__group_cols=("Pclass",))
     assert "Sex" not in pipe.named_steps["age_imputer"].group_cols
+
+
+# --- Parte 16: evaluación final ----------------------------------------------
+
+@pytest.fixture
+def ajustado(toy):
+    """Un pipeline entrenado y una partición de prueba, para la Parte 16."""
+    X, y = toy
+    X_tr, X_te, y_tr, y_te = ml.split(X, y, test_size=0.25, random_state=1)
+    pipe = ml.build_pipeline(ml.get_candidates(42)["logreg"]).fit(X_tr, y_tr)
+    return pipe, X_te, y_te
+
+
+def test_evaluate_on_test_returns_metrics(toy):
+    """Prueba del enunciado."""
+    X, y = toy
+    X_tr, X_te, y_tr, y_te = ml.split(X, y, test_size=0.25, random_state=1)
+    pipe = ml.build_pipeline(ml.get_candidates(42)["logreg"]).fit(X_tr, y_tr)
+    res = ml.evaluate_on_test(pipe, X_te, y_te, threshold=0.5)
+    assert {"accuracy", "f1", "roc_auc", "n_test"} <= set(res)
+    assert 0 <= res["accuracy"] <= 1 and res["n_test"] == len(X_te)
+
+
+def test_evaluate_on_test_is_json_serializable(ajustado):
+    """Las métricas entran en los metadatos del modelo: nada de tipos NumPy."""
+    pipe, X_te, y_te = ajustado
+    json.dumps(ml.evaluate_on_test(pipe, X_te, y_te))
+
+
+def test_evaluate_on_test_honours_the_threshold(ajustado):
+    """Subir el umbral no puede aumentar el recall."""
+    pipe, X_te, y_te = ajustado
+    bajo = ml.evaluate_on_test(pipe, X_te, y_te, threshold=0.3)
+    alto = ml.evaluate_on_test(pipe, X_te, y_te, threshold=0.7)
+    assert alto["recall"] <= bajo["recall"]
+    assert alto["roc_auc"] == bajo["roc_auc"]      # el AUC no depende del umbral
+
+
+def test_bootstrap_ci_brackets_the_estimate(ajustado):
+    pipe, X_te, y_te = ajustado
+    proba = pipe.predict_proba(X_te)[:, 1]
+    ic = ml.bootstrap_ci(y_te, proba, n_boot=200)
+    assert ic["ic_bajo"] <= ic["estimacion"] <= ic["ic_alto"]
+    assert ic["amplitud"] == round(ic["ic_alto"] - ic["ic_bajo"], 4)
+    assert ic["n_remuestreos"] <= 200
+
+
+def test_bootstrap_ci_narrows_with_more_data():
+    """El ancho del intervalo es la lección del Paso 62."""
+    rng = np.random.default_rng(0)
+
+    def ancho(n):
+        y = rng.integers(0, 2, n)
+        proba = np.clip(y * 0.4 + rng.normal(0.3, 0.2, n), 0, 1)
+        return ml.bootstrap_ci(y, proba, n_boot=200)["amplitud"]
+
+    assert ancho(2000) < ancho(150)
+
+
+def test_bootstrap_ci_is_reproducible(ajustado):
+    pipe, X_te, y_te = ajustado
+    proba = pipe.predict_proba(X_te)[:, 1]
+    a = ml.bootstrap_ci(y_te, proba, n_boot=100, random_state=3)
+    b = ml.bootstrap_ci(y_te, proba, n_boot=100, random_state=3)
+    assert a == b
+
+
+# --- Parte 17: decisiones congeladas y modelo final ---------------------------
+
+def test_frozen_decisions_are_coherent():
+    """Las constantes del Paso 64 tienen que referirse a cosas que existen."""
+    assert ml.FINAL_ESTIMATOR in ml.get_candidates()
+    assert set(ml.FINAL_PARAMS) <= set(ml.build_pipeline(
+        ml.get_candidates()[ml.FINAL_ESTIMATOR]).get_params())
+    assert 0.0 < ml.THRESHOLD < 1.0
+    assert isinstance(ml.USE_CABIN_FEATURES, bool)
+
+
+def test_final_features_follow_the_cabin_decision():
+    num, cat = ml.final_features()
+    hay_cabina = set(ml.CABIN_NUM) <= set(num) and set(ml.CABIN_CAT) <= set(cat)
+    assert hay_cabina == ml.USE_CABIN_FEATURES
+    assert set(ml.NUM_FEATURES) <= set(num) and set(ml.CAT_FEATURES) <= set(cat)
+
+
+def test_train_final_applies_the_frozen_parameters(toy):
+    X, y = toy
+    pipe = ml.train_final(X, y)
+    for clave, valor in ml.FINAL_PARAMS.items():
+        assert pipe.get_params()[clave] == valor
+    assert hasattr(pipe["model"], "predict_proba")
+
+
+def test_save_and_load_roundtrip(tmp_path, toy):
+    """Prueba del enunciado."""
+    X, y = toy
+    pipe = ml.build_pipeline(ml.get_candidates(42)["logreg"]).fit(X, y)
+    path = ml.save_model(pipe, {"estimator": "logreg", "n_train": len(X)},
+                         name="toy_model", models_dir=tmp_path)
+    loaded, meta = ml.load_model(path)
+    assert np.array_equal(pipe.predict(X), loaded.predict(X))
+    assert {"sklearn_version", "python_version", "model_sha256", "saved_at"} <= set(meta)
+    assert meta["n_train"] == len(X)
+
+
+def test_predict_returns_probabilities_and_labels(toy):
+    """Prueba del enunciado."""
+    X, y = toy
+    pipe = ml.build_pipeline(ml.get_candidates(42)["logreg"]).fit(X, y)
+    out = ml.predict(pipe, X, threshold=0.5)
+    assert list(out.columns) == ["proba_survive", "pred"]
+    assert set(out["pred"].unique()) <= {0, 1}
+
+
+def test_predict_uses_the_frozen_threshold_by_default(toy):
+    """Si predict usara 0.5 por costumbre, ignoraría la decisión del Paso 53."""
+    X, y = toy
+    pipe = ml.build_pipeline(ml.get_candidates(42)["logreg"]).fit(X, y)
+    por_defecto = ml.predict(pipe, X)
+    explicito = ml.predict(pipe, X, threshold=ml.THRESHOLD)
+    pd.testing.assert_frame_equal(por_defecto, explicito)
+
+
+def test_model_sha256_matches_the_saved_file(tmp_path, toy):
+    """La huella tiene que ser la del archivo, no una cadena cualquiera."""
+    X, y = toy
+    pipe = ml.build_pipeline(ml.get_candidates(42)["logreg"]).fit(X, y)
+    path = ml.save_model(pipe, {}, name="toy_model", models_dir=tmp_path)
+    _, meta = ml.load_model(path)
+    assert meta["model_sha256"] == sha256_of(path)
+
+
+def test_run_writes_the_model_and_its_metadata(tmp_path, silver):
+    """El Paso 68 de punta a punta, sobre una Silver mínima."""
+    modelo = ml.run(in_dir=silver.parent, models_dir=tmp_path)
+    assert modelo.exists()
+
+    meta = json.loads(modelo.with_suffix(".metadata.json").read_text(encoding="utf-8"))
+    requeridos = {"estimator", "params", "features", "target", "threshold",
+                  "random_state", "n_train", "data_sha256", "metrics"}
+    assert requeridos <= set(meta)
+    assert 0 < meta["metrics"]["n_test"] < meta["n_train"]
+    assert {"roc_auc_ic95", "accuracy_ic95"} <= set(meta["metrics"])
+
+
+def test_run_trains_the_final_model_on_every_labelled_row(tmp_path, silver):
+    """El artefacto se entrena con TODO, no solo con el 80 % de entrenamiento."""
+    modelo = ml.run(in_dir=silver.parent, models_dir=tmp_path)
+    meta = json.loads(modelo.with_suffix(".metadata.json").read_text(encoding="utf-8"))
+    X, _ = ml.load_dataset(silver)
+    assert meta["n_train"] == len(X)
+
+
+def test_run_records_the_hash_of_the_data_it_used(tmp_path, silver):
+    modelo = ml.run(in_dir=silver.parent, models_dir=tmp_path)
+    meta = json.loads(modelo.with_suffix(".metadata.json").read_text(encoding="utf-8"))
+    assert meta["data_sha256"] == sha256_of(silver)
