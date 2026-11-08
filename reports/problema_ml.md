@@ -712,3 +712,209 @@ desempeño esperado del procedimiento es la de la CV anidada —**0.8783 ±
 0.0239**— y nunca `best_score_`. La Parte 16 abrirá el conjunto de prueba una
 sola vez, y la distancia entre lo que diga y ese 0.8783 será la medida última
 de cuánto optimismo quedaba.
+
+---
+
+## 9. Interpretación del modelo y selección final de variables
+
+**Resultado:** `USE_CABIN_FEATURES = False` —las variables de cabina empeoran
+el modelo—, y **eliminar `Sex` del conjunto de variables no eliminaría el sexo
+del modelo**: `TTitulo` toma su lugar casi por completo.
+
+### 9.1 Coeficientes del modelo lineal
+
+Los de mayor magnitud, con su razón de momios `exp(coeficiente)`:
+
+| Variable | Coeficiente | Razón de momios |
+|---|---|---|
+| `Pclass_1` | +1.1652 | 3.21 |
+| `Pclass_3` | −1.1011 | 0.33 |
+| `Sex_female` | +0.9378 | 2.55 |
+| `Sex_male` | −0.8737 | 0.42 |
+| `TTitulo_Mrs` | +0.7295 | 2.07 |
+| `Age` | **−0.6637** | **0.52** |
+| `TTitulo_Mr` | −0.5248 | 0.59 |
+| `Embarked_Q` | +0.3721 | 1.45 |
+| `Embarked_S` | −0.3120 | 0.73 |
+| `SibSp` | −0.2482 | 0.78 |
+
+**Tres lecturas, con la unidad correcta en cada caso.**
+
+1. **`Pclass_1`, razón de momios 3.21.** Viajar en primera clase multiplica
+   por 3.2 los momios a favor de sobrevivir, frente al conjunto de las demás
+   clases y con todo lo demás igual. El par con `Pclass_3` (0.33) da el
+   recorrido completo de la variable: **2.27 puntos de coeficiente** entre un
+   extremo y otro, el mayor de cualquier grupo.
+2. **`Age`, coeficiente −0.6637.** La variable está **estandarizada**, así que
+   "una unidad" es una desviación estándar —del orden de 13 años en estos
+   datos—, no un año. Trece años más de edad **dividen los momios casi a la
+   mitad** (0.52), con el título y la clase ya controlados.
+3. **`Pclass_2`, coeficiente exactamente 0.0000.** La segunda clase quedó como
+   punto neutro: el modelo la trata como la referencia natural y toda la señal
+   de clase está en la distancia entre primera y tercera.
+
+**Un cuidado al comparar magnitudes.** Las categóricas vienen de *one-hot*, de
+modo que cada coeficiente compara su categoría contra el resto y no contra una
+referencia fija. Comparar `Pclass_1` con `Sex_female` como si fueran
+equivalentes es engañoso; lo comparable es el **recorrido dentro de cada
+grupo**: 2.27 para la clase, 1.81 para el sexo, 1.25 para el título.
+
+### 9.2 Importancia por permutación
+
+Medida sobre 178 pasajeros de validación que el modelo no vio, con 30
+repeticiones, sobre el modelo `hgb` con los parámetros de la sección 8.
+
+| Variable | Caída de ROC-AUC | Desviación |
+|---|---|---|
+| `Sex` | **0.0905** | 0.0172 |
+| `Age` | **0.0716** | 0.0208 |
+| `Pclass` | 0.0559 | 0.0126 |
+| `Fare` | 0.0453 | 0.0141 |
+| `TTitulo` | 0.0396 | 0.0128 |
+| `Familia` | 0.0175 | 0.0057 |
+| `SibSp` | 0.0036 | 0.0018 |
+| `Parch` | 0.0027 | 0.0030 |
+| `HasCabin` | 0.0000 | 0.0000 |
+| `Alone` | 0.0000 | 0.0000 |
+| `TCabin` | 0.0000 | 0.0000 |
+| `Embarked` | −0.0064 | 0.0042 |
+
+**`Age` queda segunda, y eso contradice la matriz de correlación del Paso 27**,
+donde su correlación lineal con la supervivencia era de **−0.08**:
+prácticamente nula.
+
+No hay contradicción real, sino dos medidas distintas. La correlación mide el
+efecto **marginal**, sin controlar nada, y ahí los niños y los ancianos se
+cancelan entre sí. El modelo mide el efecto **parcial**: una vez que se sabe
+que un pasajero es "Mr" y viaja en tercera, la edad dentro de ese grupo sí
+discrimina. Lo mismo dice el coeficiente lineal de 9.1.
+
+> **Descartar variables por su correlación baja habría eliminado la segunda
+> variable más importante del modelo.**
+
+`HasCabin` y `TCabin` salen en 0.0000 exacto porque la configuración base no
+las incluye; sirve de comprobación de que el conjunto de variables es el
+esperado.
+
+### 9.3 Ablación
+
+Cuatro configuraciones sobre los mismos pliegues, con los parámetros finales:
+
+| Configuración | Variables | ROC-AUC | Desv. | Δ vs A |
+|---|---|---|---|---|
+| **A. base** | 10 | 0.8925 | 0.0211 | 0.0000 |
+| B. base + cabina | 12 | 0.8905 | 0.0222 | **−0.0020** |
+| C. base sin `TTitulo` | 9 | 0.8829 | 0.0177 | −0.0096 |
+| D. base sin `Sex` | 9 | 0.8868 | 0.0232 | **−0.0057** |
+
+**Los tres cambios caen dentro de ±1 desviación de la base (0.0211)**, de modo
+que la ablación por sí sola no establece ninguno. Lo que sigue se apoya en la
+combinación de esta tabla con la importancia por permutación, no en estos
+números aislados.
+
+**Un detalle metodológico que cambia la fila D.** El imputador de edad agrupa
+por `Sex` y `Pclass`. Quitar `Sex` del conjunto de variables **no la saca del
+modelo**: seguiría entrando a través de la edad imputada, y la caída medida
+sería artificialmente pequeña. Por eso, cuando `Sex` no está presente, el
+imputador pasa a agrupar solo por `Pclass`. Es una fuga que no produce ningún
+error y simplemente devuelve el número equivocado.
+
+### 9.4 Decisión sobre las variables de cabina
+
+**`USE_CABIN_FEATURES = False`.**
+
+La fila B resuelve la duda que el Paso 40 dejó abierta y que la sección 4
+registró sin cerrar: añadir `HasCabin` y `TCabin` **empeora** el modelo en
+0.0020, y la importancia por permutación les asigna 0.0000.
+
+No hay disyuntiva que resolver. La sección 4 anticipaba un dilema —ganancia de
+desempeño contra el riesgo de que la cabina fuera un **artefacto del
+registro**, anotada con más detalle para quienes sobrevivieron para
+declararla— y ese dilema no se materializó: no hay ganancia que pesar. Las
+variables se descartan **por desempeño**, y el argumento del artefacto queda
+como refuerzo.
+
+Conviene señalar además lo que ya decía la sección 4: la cabina falta en el
+18.5 % de primera clase y en el 97.6 % de tercera, así que buena parte de lo
+que aparentaba aportar era `Pclass` disfrazada — información que el modelo ya
+tenía.
+
+### 9.5 Eliminar `Sex` sería una medida cosmética
+
+Quitar `Sex` cuesta **−0.0057**, bien dentro del ruido. La razón aparece al
+repetir la importancia por permutación sin esa variable:
+
+| Variable | Con `Sex` | Sin `Sex` | Cambio |
+|---|---|---|---|
+| **`TTitulo`** | 0.0396 | **0.2106** | **+0.1710** |
+| `Pclass` | 0.0559 | 0.0564 | +0.0005 |
+| `SibSp` | 0.0036 | 0.0038 | +0.0002 |
+| `Fare` | 0.0453 | 0.0447 | −0.0006 |
+| `Familia` | 0.0175 | 0.0143 | −0.0032 |
+| `Age` | 0.0716 | 0.0635 | −0.0081 |
+
+**`TTitulo` se multiplica por 5.3 y absorbe el papel completo de `Sex`**, al
+punto de ganar más importancia (+0.1710) de la que `Sex` tenía (0.0905).
+Obvio una vez visto: "Mr" es hombre, "Mrs" y "Miss" son mujeres. El título es
+el sexo con otro nombre, y el EDA ya lo había medido — correlación de −0.80
+entre ambas codificadas (`reports/conclusiones_eda.md`, sección 3).
+
+> **Consecuencia para la sección 7.6.** Suprimir la columna `Sex` para cumplir
+> una prohibición regulatoria **no quitaría el sexo del modelo**. La
+> información entraría igual por el título, el desempeño apenas cambiaría y el
+> cumplimiento sería aparente. Para eliminar el sexo de verdad habría que
+> quitar también `TTitulo` y auditar qué otra variable toma el relevo
+> después — un trabajo que este análisis no hizo y que no debe darse por
+> hecho.
+
+**Una aparente contradicción que conviene explicar.** La permutación dice que
+`Sex` importa más del doble que `TTitulo` (0.0905 contra 0.0396), pero la
+ablación dice que quitar `TTitulo` duele más que quitar `Sex` (−0.0096 contra
+−0.0057).
+
+Las dos medidas son correctas porque responden preguntas distintas. La
+permutación mide **en qué se apoya el modelo cuando todas las demás variables
+están presentes**; la ablación mide **qué es insustituible**. `TTitulo` lleva
+la información de `Sex` *y además* algo propio —`Master` identifica a los
+niños varones, `Mrs` y `Miss` separan por estado civil—, de modo que puede
+cubrir la ausencia de `Sex`, mientras que `Sex` no puede cubrir la suya.
+
+Interpretar la importancia por permutación como "cuánto aporta cada variable"
+es, por tanto, un error cuando hay variables correlacionadas: se reparten el
+crédito y ambas parecen menos importantes de lo que son.
+
+### 9.6 Variables que no aportan nada
+
+| Variable | Caída | Lectura |
+|---|---|---|
+| `Alone` | 0.0000 ± 0.0000 | El modelo nunca la usa: `Familia` lleva la misma información con más resolución. |
+| `Embarked` | −0.0064 ± 0.0042 | Barajarla **mejora** el modelo, de forma consistente en las 30 repeticiones. |
+
+El caso de `Embarked` merece una nota, porque el EDA sí había encontrado señal
+en el puerto de embarque: en tercera clase, 37.9 % en Cherburgo frente a
+19.0 % en Southampton (`reports/conclusiones_eda.md`, sección 3). Ese residuo
+existe en los datos, pero el modelo no consigue explotarlo: con 712 pasajeros
+repartidos en tres puertos y tres clases, las celdas quedan demasiado pequeñas.
+
+**Ninguna de las dos se elimina en esta versión.** Cambiar el conjunto de
+variables después de haber visto estas cifras introduciría exactamente el
+sesgo de selección que la sección 8 midió y rechazó. Quedan registradas como
+candidatas a revisar en una versión futura, con una evaluación propia.
+
+### 9.7 Lo que esta sección no demuestra
+
+**Importancia no es causalidad.** Todo lo anterior describe de qué depende el
+modelo para predecir, no qué causó sobrevivir. Que `Sex` encabece la lista no
+significa que el sexo matara o salvara: lo más probable es que mediara un
+protocolo de evacuación que no está en los datos.
+
+**Una sola partición.** La importancia por permutación se midió sobre 178
+pasajeros de validación, elegidos por una única división. Las desviaciones
+reportadas son de las 30 repeticiones del barajado, **no** de repetir la
+partición: subestiman la incertidumbre real.
+
+**Las explicaciones son del modelo, no de los datos.** Los coeficientes de
+9.1 describen un modelo lineal, y la importancia de 9.2 describe un modelo de
+árboles con los parámetros de la sección 8. Los dos ordenan las variables de
+forma distinta —el lineal pone la clase por delante del sexo, el de árboles al
+revés— y ninguna de las dos ordenaciones es "la verdad".
