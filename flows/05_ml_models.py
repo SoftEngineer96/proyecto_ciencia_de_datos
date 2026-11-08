@@ -18,6 +18,7 @@ from sklearn.compose import ColumnTransformer
 from sklearn.dummy import DummyClassifier
 from sklearn.ensemble import HistGradientBoostingClassifier, RandomForestClassifier
 from sklearn.impute import SimpleImputer
+from sklearn.inspection import permutation_importance
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (
     accuracy_score,
@@ -713,7 +714,121 @@ def nested_cv_score(X, y, name: str = "hgb", num_features=None, cat_features=Non
 
 
 # --------------------------------------------------------------------------
-# Pendientes (Partes 15 a 17)
+# Parte 15 — interpretación y ablación de variables (Pasos 59 a 61)
+# --------------------------------------------------------------------------
+def linear_coefficients(X, y, num_features=None, cat_features=None,
+                        random_state=None) -> pd.DataFrame:
+    """Paso 59: coeficientes del modelo lineal y sus razones de momios.
+
+    La razón de momios es exp(coeficiente): cuánto se multiplican las
+    probabilidades a favor de sobrevivir cuando la variable sube una unidad.
+    Por encima de 1 empuja hacia sobrevivir, por debajo hacia lo contrario.
+
+    Cuidado al interpretar: las numéricas están ESTANDARIZADAS, así que "una
+    unidad" es una desviación estándar, no un año ni una libra. Las
+    categóricas vienen de one-hot, así que cada coeficiente compara esa
+    categoría contra el resto, no contra una referencia fija.
+    """
+    semilla = settings.random_state if random_state is None else random_state
+    pipe = build_pipeline(get_candidates(semilla)["logreg"],
+                          num_features, cat_features)
+    pipe.fit(X, y)
+
+    coeficientes = pipe["model"].coef_[0]
+    tabla = pd.DataFrame({
+        "variable": [str(n) for n in pipe["prep"].get_feature_names_out()],
+        "coeficiente": coeficientes.round(4),
+        "razon_de_momios": np.exp(coeficientes).round(4),
+    })
+    return (tabla.reindex(tabla["coeficiente"].abs().sort_values(ascending=False).index)
+            .reset_index(drop=True))
+
+
+def permutation_table(pipe, X_val, y_val, n_repeats: int = 30,
+                      random_state=None, scoring: str | None = None) -> pd.DataFrame:
+    """Paso 60: importancia por permutación sobre las columnas ORIGINALES.
+
+    Se baraja una columna en datos que el modelo no vio y se mide cuánto cae
+    la métrica. Cuanto más cae, más dependía de ella.
+
+    Es preferible a la importancia por impurezas de los árboles, que
+    sobrevalora las variables con muchos valores distintos (Fare tiene 248
+    valores, Sex tiene 2) por el solo hecho de ofrecer más puntos de corte.
+
+    Se permuta la columna de entrada al Pipeline, no las columnas que genera
+    el one-hot: así 'Embarked' se evalúa entera, y no repartida en tres
+    indicadores que se taparían entre sí.
+
+    Una caída negativa significa que barajar la columna MEJORÓ la métrica: la
+    variable no aporta nada y su efecto está dentro del ruido.
+    """
+    semilla = settings.random_state if random_state is None else random_state
+    r = permutation_importance(
+        pipe, X_val, y_val,
+        scoring=PRIMARY_METRIC if scoring is None else scoring,
+        n_repeats=n_repeats, random_state=semilla, n_jobs=1,
+    )
+    return (pd.DataFrame({
+        "variable": list(X_val.columns),
+        "caida_media": r.importances_mean.round(4),
+        "desviacion": r.importances_std.round(4),
+    }).sort_values("caida_media", ascending=False).reset_index(drop=True))
+
+
+def ablation_configs() -> dict[str, tuple[list, list]]:
+    """Paso 61: las cuatro configuraciones de variables que se comparan."""
+    return {
+        "A. base": (NUM_FEATURES, CAT_FEATURES),
+        "B. base + cabina": (NUM_FEATURES + CABIN_NUM, CAT_FEATURES + CABIN_CAT),
+        "C. base sin TTitulo": (NUM_FEATURES,
+                                [c for c in CAT_FEATURES if c != "TTitulo"]),
+        "D. base sin Sex": (NUM_FEATURES, [c for c in CAT_FEATURES if c != "Sex"]),
+    }
+
+
+def ablation(X, y, name: str = "hgb", params: dict | None = None,
+             random_state=None, cv_folds=None) -> pd.DataFrame:
+    """Paso 61: cuánto aporta cada grupo de variables, con los MISMOS pliegues.
+
+    Quitar una variable y volver a medir en otra partición confundiría el
+    efecto de la variable con el del reparto. Aquí las cuatro
+    configuraciones se evalúan sobre los mismos pliegues.
+
+    Detalle que cambia el resultado de la configuración D: el imputador de
+    edad agrupa por Sex y Pclass, así que quitar Sex de las variables NO la
+    saca del modelo —seguiría entrando por la edad imputada—. Cuando Sex no
+    está entre las categóricas, el imputador pasa a agrupar solo por Pclass.
+    """
+    semilla = settings.random_state if random_state is None else random_state
+    cv = make_cv(semilla, cv_folds)
+
+    filas = []
+    for etiqueta, (num, cat) in ablation_configs().items():
+        pipe = build_pipeline(get_candidates(semilla)[name], num, cat)
+        if params:
+            pipe.set_params(**params)
+        if "Sex" not in cat:
+            pipe.set_params(age_imputer__group_cols=("Pclass",))
+
+        puntajes = cross_val_score(pipe, X, y, cv=cv, scoring=PRIMARY_METRIC)
+        filas.append({
+            "configuracion": etiqueta,
+            "n_variables": len(num) + len(cat),
+            f"{PRIMARY_METRIC}_mean": round(float(puntajes.mean()), 4),
+            f"{PRIMARY_METRIC}_std": round(float(puntajes.std()), 4),
+        })
+        log.info("%-22s %s=%.4f (+/-%.4f)", etiqueta, PRIMARY_METRIC,
+                 puntajes.mean(), puntajes.std())
+
+    tabla = pd.DataFrame(filas)
+    base = tabla.loc[tabla["configuracion"] == "A. base",
+                     f"{PRIMARY_METRIC}_mean"].iloc[0]
+    tabla["delta_vs_A"] = (tabla[f"{PRIMARY_METRIC}_mean"] - base).round(4)
+    return tabla
+
+
+# --------------------------------------------------------------------------
+# Pendientes (Partes 16 y 17)
 # --------------------------------------------------------------------------
 
 

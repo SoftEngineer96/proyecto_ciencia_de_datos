@@ -581,3 +581,92 @@ def test_nested_cv_outer_folds_differ_from_the_inner_ones(toy):
     internos = [te.tolist() for _, te in ml.make_cv(42, 3).split(X, y)]
     externos = [te.tolist() for _, te in ml.make_cv(43, 3).split(X, y)]
     assert internos != externos
+
+
+# --- Parte 15: interpretación y ablación -------------------------------------
+
+def test_linear_coefficients_has_one_row_per_generated_column(toy):
+    X, y = toy
+    tabla = ml.linear_coefficients(X, y)
+    assert list(tabla.columns) == ["variable", "coeficiente", "razon_de_momios"]
+    assert tabla["variable"].map(type).eq(str).all()
+    assert len(tabla) >= len(ml.NUM_FEATURES)      # one-hot añade columnas
+
+
+def test_linear_coefficients_is_sorted_by_absolute_value(toy):
+    """Lo que importa es la magnitud, no el signo."""
+    X, y = toy
+    magnitudes = ml.linear_coefficients(X, y)["coeficiente"].abs()
+    assert magnitudes.is_monotonic_decreasing
+
+
+def test_odds_ratio_is_the_exponential_of_the_coefficient(toy):
+    X, y = toy
+    tabla = ml.linear_coefficients(X, y)
+    assert np.allclose(tabla["razon_de_momios"], np.exp(tabla["coeficiente"]), atol=1e-3)
+
+
+def test_odds_ratio_sits_on_the_right_side_of_one(toy):
+    """Coeficiente positivo empuja a sobrevivir: razón de momios > 1."""
+    tabla = ml.linear_coefficients(*toy)
+    positivos = tabla[tabla["coeficiente"] > 0]
+    assert (positivos["razon_de_momios"] > 1).all()
+
+
+def test_permutation_table_covers_the_original_columns(toy):
+    """Se permutan las columnas de entrada, no las que genera el one-hot."""
+    X, y = toy
+    X_tr, X_val, y_tr, y_val = ml.split(X, y, test_size=0.3)
+    pipe = ml.build_pipeline(ml.get_candidates()["logreg"]).fit(X_tr, y_tr)
+    tabla = ml.permutation_table(pipe, X_val, y_val, n_repeats=3)
+    assert set(tabla["variable"]) == set(X_val.columns)
+    assert tabla["caida_media"].is_monotonic_decreasing
+
+
+def test_permutation_finds_the_variable_that_generates_the_target(toy):
+    """En el toy, y se construye desde Sex: debe quedar primera."""
+    X, y = toy
+    X_tr, X_val, y_tr, y_val = ml.split(X, y, test_size=0.3)
+    pipe = ml.build_pipeline(ml.get_candidates()["logreg"]).fit(X_tr, y_tr)
+    assert ml.permutation_table(pipe, X_val, y_val, n_repeats=5).loc[0, "variable"] == "Sex"
+
+
+def test_permutation_is_reproducible(toy):
+    X, y = toy
+    X_tr, X_val, y_tr, y_val = ml.split(X, y, test_size=0.3)
+    pipe = ml.build_pipeline(ml.get_candidates()["logreg"]).fit(X_tr, y_tr)
+    a = ml.permutation_table(pipe, X_val, y_val, n_repeats=3, random_state=7)
+    b = ml.permutation_table(pipe, X_val, y_val, n_repeats=3, random_state=7)
+    pd.testing.assert_frame_equal(a, b)
+
+
+def test_ablation_configs_isolate_one_change_each():
+    cfg = ml.ablation_configs()
+    assert set(cfg) == {"A. base", "B. base + cabina",
+                        "C. base sin TTitulo", "D. base sin Sex"}
+    assert "TTitulo" not in cfg["C. base sin TTitulo"][1]
+    assert "Sex" not in cfg["D. base sin Sex"][1]
+    assert set(ml.CABIN_CAT) <= set(cfg["B. base + cabina"][1])
+    assert set(ml.CABIN_NUM) <= set(cfg["B. base + cabina"][0])
+
+
+def test_ablation_returns_one_row_per_configuration(toy):
+    X, y = toy
+    tabla = ml.ablation(X, y, name="logreg", cv_folds=3)
+    assert len(tabla) == 4
+    assert tabla.loc[tabla["configuracion"] == "A. base", "delta_vs_A"].iloc[0] == 0.0
+
+
+def test_ablation_detects_the_loss_of_the_driving_variable(toy):
+    """Quitar Sex, que genera y en el toy, tiene que doler."""
+    X, y = toy
+    tabla = ml.ablation(X, y, name="logreg", cv_folds=3).set_index("configuracion")
+    assert tabla.loc["D. base sin Sex", "delta_vs_A"] < 0
+
+
+def test_ablation_without_sex_also_removes_it_from_the_imputer():
+    """Si no, Sex seguiria entrando al modelo por la edad imputada."""
+    cfg = ml.ablation_configs()["D. base sin Sex"]
+    pipe = ml.build_pipeline(ml.get_candidates()["logreg"], *cfg)
+    pipe.set_params(age_imputer__group_cols=("Pclass",))
+    assert "Sex" not in pipe.named_steps["age_imputer"].group_cols
