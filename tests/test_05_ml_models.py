@@ -492,3 +492,92 @@ def test_learning_curve_table_grows_with_the_sample(toy):
 def test_finalists_are_real_candidates():
     """Los nombres del Paso 50 tienen que existir en get_candidates()."""
     assert set(ml.FINALISTS) <= set(ml.get_candidates())
+
+
+# --- Parte 14: ajuste de hiperparámetros -------------------------------------
+
+def test_param_grids_cover_every_finalist():
+    """Los tres modelos del Paso 50 tienen que tener rejilla."""
+    assert set(ml.FINALISTS) <= set(ml.get_param_grids())
+
+
+def test_param_grid_keys_use_the_pipeline_prefix():
+    """Sin 'model__' la búsqueda no sabría a qué paso del Pipeline apuntar."""
+    for nombre, rejilla in ml.get_param_grids().items():
+        for clave in rejilla:
+            assert clave.startswith("model__"), f"{nombre}: {clave}"
+
+
+def test_param_grids_name_real_estimator_parameters():
+    """Un nombre mal escrito solo falla al ajustar; aquí falla al instante."""
+    candidatos = ml.get_candidates()
+    for nombre, rejilla in ml.get_param_grids().items():
+        validos = set(ml.build_pipeline(candidatos[nombre]).get_params())
+        assert set(rejilla) <= validos, f"{nombre}: {set(rejilla) - validos}"
+
+
+def test_param_grids_have_no_empty_lists():
+    for nombre, rejilla in ml.get_param_grids().items():
+        for clave, valores in rejilla.items():
+            assert len(valores) >= 1, f"{nombre}: {clave}"
+
+
+def test_tune_model_is_never_worse_than_the_default(toy):
+    """C=1 está en la rejilla, así que el óptimo no puede quedar por debajo."""
+    X, y = toy
+    gs = ml.tune_model(X, y, name="logreg", cv_folds=3, n_jobs=1)
+    por_defecto = ml.cross_validate_candidates(
+        X, y, cv_folds=3
+    ).set_index("modelo").loc["logreg", "roc_auc_mean"]
+    assert gs.best_score_ >= por_defecto - 1e-9
+
+
+def test_tune_model_returns_a_usable_estimator(toy):
+    X, y = toy
+    gs = ml.tune_model(X, y, name="logreg", cv_folds=3, n_jobs=1)
+    assert set(gs.best_params_) <= set(ml.get_param_grids()["logreg"])
+    proba = gs.best_estimator_.predict_proba(X)[:, 1]
+    assert ((proba >= 0) & (proba <= 1)).all()
+
+
+def test_search_results_is_ranked_and_measures_flatness(toy):
+    X, y = toy
+    gs = ml.tune_model(X, y, name="logreg", cv_folds=3, n_jobs=1)
+    tabla = ml.search_results(gs)
+    assert tabla["rank_test_score"].is_monotonic_increasing
+    assert tabla.loc[0, "dif_vs_mejor"] == 0.0
+    assert (tabla["dif_vs_mejor"] >= 0).all()
+    assert tabla["params"].map(type).eq(str).all()      # Parquet y display
+
+
+def test_paired_comparison_uses_the_same_folds_for_both(toy):
+    """Si best_params no cambia nada, la diferencia debe ser exactamente 0."""
+    X, y = toy
+    tabla = ml.paired_fold_comparison(X, y, name="logreg", best_params=None, cv_folds=3)
+    assert len(tabla) == 3
+    assert (tabla["diferencia"] == 0).all()
+
+
+def test_paired_comparison_reports_one_row_per_fold(toy):
+    X, y = toy
+    tabla = ml.paired_fold_comparison(X, y, name="logreg",
+                                      best_params={"model__C": 10}, cv_folds=3)
+    assert list(tabla.columns) == ["pliegue", "por_defecto", "ajustado", "diferencia"]
+    esperado = (tabla["ajustado"] - tabla["por_defecto"]).round(4)
+    assert np.allclose(tabla["diferencia"], esperado)
+
+
+def test_nested_cv_returns_one_score_per_outer_fold(toy):
+    X, y = toy
+    r = ml.nested_cv_score(X, y, name="logreg", cv_folds=3, n_jobs=1)
+    assert set(r) == {"puntajes", "media", "desviacion"}
+    assert len(r["puntajes"]) == 3
+    assert 0 <= r["media"] <= 1
+
+
+def test_nested_cv_outer_folds_differ_from_the_inner_ones(toy):
+    """Si coincidieran, la busqueda veria los datos con los que se la evalua."""
+    X, y = toy
+    internos = [te.tolist() for _, te in ml.make_cv(42, 3).split(X, y)]
+    externos = [te.tolist() for _, te in ml.make_cv(43, 3).split(X, y)]
+    assert internos != externos

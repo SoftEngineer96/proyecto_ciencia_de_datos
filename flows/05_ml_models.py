@@ -30,8 +30,10 @@ from sklearn.metrics import (
     recall_score,
 )
 from sklearn.model_selection import (
+    GridSearchCV,
     StratifiedKFold,
     cross_val_predict,
+    cross_val_score,
     cross_validate,
     learning_curve,
     train_test_split,
@@ -572,13 +574,147 @@ def learning_curve_table(pipe, X, y, train_sizes=None,
 
 
 # --------------------------------------------------------------------------
-# Pendientes (Partes 14 a 17)
+# Parte 14 — ajuste de hiperparámetros (Pasos 56 a 58)
 # --------------------------------------------------------------------------
+def get_param_grids() -> dict[str, dict]:
+    """Paso 56: rejillas por modelo, con el prefijo 'model__' del Pipeline.
+
+    El prefijo no es decorativo: la búsqueda recorre el pipeline COMPLETO, así
+    que el preprocesamiento se reajusta en cada pliegue de cada combinación.
+    Sin eso, la búsqueda tendría la misma fuga que el Paso 43 demostró.
+
+    Las rejillas apuntan a lo que diagnosticó la curva de aprendizaje del Paso
+    55: varianza alta. De ahí que 'forest' y 'hgb' muevan sobre todo los
+    diales que limitan la capacidad de memorizar —profundidad, hojas mínimas,
+    penalización L2— y no los que la aumentan.
+    """
+    return {
+        # El enunciado propone además 'model__penalty': ['l2']. Se omite a
+        # propósito: scikit-learn 1.8 deprecó ese argumento y lo retira en la
+        # 1.10, así que llena la salida de FutureWarning. Como la rejilla
+        # tenía un único valor y 'l2' ya es el comportamiento por defecto, el
+        # espacio de búsqueda es idéntico sin él.
+        "logreg": {
+            "model__C": [0.01, 0.1, 1, 10],
+        },
+        "forest": {
+            "model__n_estimators": [200, 400],
+            "model__max_depth": [4, 6, 8, None],
+            "model__min_samples_leaf": [1, 3, 5],
+        },
+        "hgb": {
+            "model__learning_rate": [0.03, 0.1],
+            "model__max_depth": [2, 3, 4],
+            "model__max_iter": [100, 200],
+            "model__l2_regularization": [0.0, 1.0],
+        },
+    }
 
 
-def tune_model(X, y):
-    """Parte 14: búsqueda de hiperparámetros del modelo elegido."""
-    raise NotImplementedError("Parte 14")
+def tune_model(X, y, name: str = "hgb", num_features=None, cat_features=None,
+               random_state=None, cv_folds=None, n_jobs: int = -1) -> GridSearchCV:
+    """Paso 57: búsqueda exhaustiva sobre la rejilla del modelo.
+
+    Devuelve el GridSearchCV ya ajustado: trae best_params_, best_score_ y
+    cv_results_ con las combinaciones probadas.
+
+    best_score_ es OPTIMISTA. Es el máximo de muchos puntajes ruidosos, y el
+    máximo de una muestra ruidosa está sesgado hacia arriba aunque ninguna
+    combinación sea realmente mejor. El Paso 58 existe para medir ese sesgo.
+    """
+    semilla = settings.random_state if random_state is None else random_state
+    cv = make_cv(semilla, cv_folds)
+    pipe = build_pipeline(get_candidates(semilla)[name], num_features, cat_features)
+    busqueda = GridSearchCV(pipe, get_param_grids()[name], scoring=PRIMARY_METRIC,
+                            cv=cv, n_jobs=n_jobs, refit=True)
+    busqueda.fit(X, y)
+    log.info("%-7s mejor %s=%.4f  %s", name, PRIMARY_METRIC,
+             busqueda.best_score_, busqueda.best_params_)
+    return busqueda
+
+
+def search_results(busqueda: GridSearchCV, top: int = 10) -> pd.DataFrame:
+    """Paso 57: las mejores combinaciones y qué tan plana es la superficie.
+
+    'dif_vs_mejor' responde la pregunta que importa: si las primeras filas
+    están separadas por milésimas, el ajuste no aporta y conviene quedarse con
+    la configuración más simple.
+    """
+    tabla = (pd.DataFrame(busqueda.cv_results_)
+             [["rank_test_score", "mean_test_score", "std_test_score",
+               "mean_fit_time", "params"]]
+             .sort_values("rank_test_score")
+             .head(top)
+             .reset_index(drop=True))
+    tabla["dif_vs_mejor"] = tabla["mean_test_score"].max() - tabla["mean_test_score"]
+    tabla["params"] = tabla["params"].astype(str)
+    return tabla.round({"mean_test_score": 4, "std_test_score": 4,
+                        "mean_fit_time": 4, "dif_vs_mejor": 4})
+
+
+def paired_fold_comparison(X, y, name: str = "hgb", best_params: dict | None = None,
+                           num_features=None, cat_features=None,
+                           random_state=None, cv_folds=None) -> pd.DataFrame:
+    """Paso 58 (opción B): por defecto contra ajustado, en los MISMOS pliegues.
+
+    Comparar dos medias obtenidas en particiones distintas confunde la mejora
+    con la suerte del reparto. Usando los mismos pliegues, la diferencia
+    pliegue a pliegue cancela esa fuente de ruido.
+
+    Sesgo que hay que declarar: los hiperparámetros se eligieron mirando estos
+    mismos pliegues, así que la diferencia que sale aquí es un TECHO, no una
+    estimación. La cifra honesta es la de nested_cv_score.
+    """
+    semilla = settings.random_state if random_state is None else random_state
+    cv = make_cv(semilla, cv_folds)
+    por_defecto = build_pipeline(get_candidates(semilla)[name],
+                                 num_features, cat_features)
+    ajustado = build_pipeline(get_candidates(semilla)[name],
+                              num_features, cat_features)
+    if best_params:
+        ajustado.set_params(**best_params)
+
+    a = cross_val_score(por_defecto, X, y, cv=cv, scoring=PRIMARY_METRIC)
+    b = cross_val_score(ajustado, X, y, cv=cv, scoring=PRIMARY_METRIC)
+    return pd.DataFrame({
+        "pliegue": range(len(a)),
+        "por_defecto": a.round(4),
+        "ajustado": b.round(4),
+        "diferencia": (b - a).round(4),
+    })
+
+
+def nested_cv_score(X, y, name: str = "hgb", num_features=None, cat_features=None,
+                    random_state=None, cv_folds=None, n_jobs: int = -1) -> dict:
+    """Paso 58 (opción A): validación cruzada anidada.
+
+    Mide el desempeño del PROCEDIMIENTO COMPLETO 'buscar hiperparámetros y
+    entrenar', no el del mejor punto encontrado. En cada pliegue externo la
+    búsqueda se rehace desde cero con los pliegues internos, y se evalúa sobre
+    datos que esa búsqueda nunca vio.
+
+    Es cara —pliegues externos x combinaciones x pliegues internos ajustes— y
+    es la única forma de saber cuánto de best_score_ era sesgo de selección.
+
+    Los pliegues externos usan otra semilla, para que no coincidan con los
+    internos.
+    """
+    semilla = settings.random_state if random_state is None else random_state
+    busqueda = GridSearchCV(
+        build_pipeline(get_candidates(semilla)[name], num_features, cat_features),
+        get_param_grids()[name], scoring=PRIMARY_METRIC,
+        cv=make_cv(semilla, cv_folds), n_jobs=n_jobs, refit=True,
+    )
+    puntajes = cross_val_score(busqueda, X, y, scoring=PRIMARY_METRIC,
+                               cv=make_cv(semilla + 1, cv_folds), n_jobs=1)
+    return {"puntajes": [round(float(p), 4) for p in puntajes],
+            "media": round(float(puntajes.mean()), 4),
+            "desviacion": round(float(puntajes.std()), 4)}
+
+
+# --------------------------------------------------------------------------
+# Pendientes (Partes 15 a 17)
+# --------------------------------------------------------------------------
 
 
 def final_report(X_test, y_test):
