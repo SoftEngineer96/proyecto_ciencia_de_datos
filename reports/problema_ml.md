@@ -530,3 +530,185 @@ desigual a quienes caen en el grupo mal servido, y lo hace de forma invisible
 para quien solo mire la métrica global. Por eso el desempeño por subgrupos
 entra en la ficha del modelo (`reports/model_card.md`) y no solo en este
 informe.
+
+---
+
+## 8. Ajuste de hiperparámetros y configuración final
+
+**Resultado:** el ajuste **no mejoró la capacidad de ordenar** —la ganancia
+honesta es +0.0039 con una desviación de 0.0266— pero **sí la calibración**,
+en un 40 %. Se adoptan los parámetros ajustados por esa segunda razón, no por
+la primera, y se registra `THRESHOLD = 0.50`.
+
+### 8.1 Lo que encontró la búsqueda
+
+| Modelo | Por defecto | Ajustado | "Mejora" | Combinaciones |
+|---|---|---|---|---|
+| hgb | 0.8867 | 0.8925 | +0.0058 | 24 |
+| forest | 0.8657 | 0.8822 | +0.0165 | 24 |
+| logreg | 0.8585 | 0.8585 | −0.0000 | 4 |
+
+El caso de `logreg` conviene leerlo primero porque es el más limpio: la
+búsqueda probó cuatro valores de `C` y eligió **`C=1`, que es el valor por
+defecto**. El modelo lineal ya estaba en su óptimo, y la rejilla lo confirma
+sin ambigüedad.
+
+Las otras dos "mejoras" están entre comillas por lo que sigue.
+
+### 8.2 La superficie es plana
+
+Las diez mejores combinaciones de `hgb` van de **0.8925 a 0.8848**: un rango
+total de **0.0077**. La desviación entre pliegues de cada una de ellas está
+entre 0.0211 y 0.0281.
+
+> **El rango completo del top 10 es tres veces menor que el ruido de
+> cualquiera de sus integrantes.** Con 712 pasajeros no hay forma de
+> distinguir esas diez configuraciones, y la que quedó primera lo está por
+> azar.
+
+### 8.3 ¿Mejoró de verdad?
+
+| Cifra | Valor |
+|---|---|
+| Por defecto (Paso 48) | 0.8867 |
+| Mejor de la búsqueda (`best_score_`) | 0.8925 |
+| **CV anidada** (procedimiento completo) | **0.8783** ± 0.0239 |
+| Sesgo de selección (búsqueda − anidada) | **+0.0142** |
+
+La CV anidada no mide el mejor punto encontrado: mide el procedimiento
+completo *"buscar hiperparámetros y entrenar"*, rehaciendo la búsqueda desde
+cero en cada pliegue externo. Es la cifra que corresponde a lo que ocurriría
+con datos nuevos, y queda **por debajo** del modelo sin ajustar.
+
+Como los pliegues externos de la CV anidada usan otra semilla que los del Paso
+48, esa comparación mezcla el efecto del procedimiento con el del reparto. La
+comparación pareada sobre esos mismos pliegues externos lo resuelve:
+
+| Pliegue | Por defecto | Buscar+entrenar | Diferencia |
+|---|---|---|---|
+| 0 | 0.8711 | 0.8711 | 0.0000 |
+| 1 | 0.8854 | 0.8524 | −0.0330 |
+| 2 | 0.8725 | 0.8659 | −0.0066 |
+| 3 | 0.8908 | 0.9227 | +0.0319 |
+| 4 | 0.8521 | 0.8795 | +0.0274 |
+
+**Ganancia honesta: +0.0039, desviación 0.0266, 2 de 5 pliegues mejoran.** La
+media es una séptima parte de su propia desviación.
+
+Una tercera ruta, comparando el modelo por defecto con el ajustado sobre los
+pliegues del Paso 48, dio +0.0057 ± 0.0115 con 3 de 5 pliegues — y esa cifra
+es además un techo, porque los hiperparámetros se eligieron mirando
+precisamente esos pliegues.
+
+**Las tres rutas coinciden: no hay mejora detectable en la métrica principal.**
+
+### 8.4 Por qué: la rejilla estaba mal colocada
+
+Los cuatro hiperparámetros ganadores de `hgb` son:
+
+| Hiperparámetro | Elegido | Rejilla |
+|---|---|---|
+| `l2_regularization` | 1.0 | [0.0, **1.0**] |
+| `learning_rate` | 0.1 | [0.03, **0.1**] |
+| `max_depth` | 4 | [2, 3, **4**] |
+| `max_iter` | 200 | [100, **200**] |
+
+**Los cuatro eligieron el extremo superior de su lista.** Cuando el óptimo cae
+en el borde de la rejilla, la rejilla está mal situada: el verdadero óptimo
+queda probablemente fuera del espacio explorado.
+
+Y hay un problema más concreto. El `max_depth` por defecto de
+`HistGradientBoostingClassifier` es `None`, sin límite de profundidad, y la
+rejilla solo ofrece `[2, 3, 4]`. **La búsqueda no podía siquiera reproducir la
+configuración por defecto**, de modo que el procedimiento "buscar+entrenar"
+competía contra un rival que no tenía permitido igualar.
+
+Eso explica buena parte del resultado de 8.3, y matiza la conclusión: lo
+demostrado no es que ajustar hiperparámetros sea inútil, sino que **esta
+rejilla no contenía nada mejor que el punto de partida**.
+
+Ampliarla es posible, pero exigiría una nueva evaluación anidada para ser
+creíble, y 8.2 sugiere que no cambiaría el veredicto: si diez configuraciones
+distintas rinden dentro de 0.0077 unas de otras, el modelo es insensible a
+estos diales en este volumen de datos.
+
+### 8.5 Lo que sí mejoró: la calibración
+
+| Medida | Por defecto | Ajustado | Cambio |
+|---|---|---|---|
+| Brier | 0.1302 | 0.1226 | −5.8 % |
+| Desvío absoluto medio, ponderado por n | 0.0680 | 0.0409 | **−40 %** |
+
+Los desvíos bajan en seis de los ocho tramos, incluidos los dos de mayor peso
+—el inferior con 297 pasajeros y el superior con 159—, y los signos dejan de
+apuntar todos en la misma dirección: la **forma de S** descrita en 7.3 se
+rompe.
+
+**Por qué esta mejora sí es creíble y la de ROC-AUC no.** La búsqueda
+maximizó `roc_auc`; el Brier no era su objetivo. Una cantidad que nadie estaba
+optimizando no puede estar inflada por sesgo de selección: es un subproducto,
+no un máximo escogido entre candidatos ruidosos.
+
+La sección 7.3 identificó la mala calibración como el obstáculo que impedía
+usar la probabilidad para algo más que ordenar pasajeros. Esta es la única
+dimensión en la que el ajuste aporta algo real.
+
+### 8.6 Configuración final
+
+A precisión igualada, los dos modelos se comparan así:
+
+| Modelo | Umbral | Precisión | Recall | FP | FN |
+|---|---|---|---|---|---|
+| Por defecto | 0.5443 | 0.8008 | 0.7070 | 48 | 80 |
+| **Ajustado** | **0.5000** | **0.8000** | **0.7326** | 50 | **73** |
+
+Con la misma precisión y prácticamente los mismos falsos positivos, el modelo
+ajustado encuentra **siete supervivientes más**. Es una diferencia modesta y
+medida sobre las predicciones que sirvieron para seleccionar, así que se
+reporta como indicativa, no como concluyente; pero apunta en la misma
+dirección que la calibración.
+
+**Decisión: se adoptan los parámetros ajustados.** El criterio se fijó antes
+de ver estas cifras: adoptarlos si no costaban nada en la métrica principal y
+si el modelo conservaba recall razonable bajo el piso de precisión del 80 %.
+Ambas condiciones se cumplen. La razón para adoptarlos **no es `best_score_`,
+que era ruido**, sino la calibración, que no lo es.
+
+```python
+FINAL_PARAMS = {
+    "model__l2_regularization": 1.0,
+    "model__learning_rate": 0.1,
+    "model__max_depth": 4,
+    "model__max_iter": 200,
+}
+THRESHOLD = 0.50
+```
+
+Sobre el umbral: el máximo de F1 del modelo ajustado está en 0.3809, pero ahí
+la precisión cae a 0.7587, **por debajo del piso declarado en la sección 2**.
+De los umbrales que sí cumplen el piso, 0.50 es el que menos falsos positivos
+produce, y la diferencia frente a sus vecinos (0.4788 da F1 de 0.7704 contra
+0.7648) está holgadamente dentro del ruido. Se elige 0.50 por cumplir el
+criterio con el número redondo, no por ser la convención.
+
+### 8.7 Limitaciones de esta parte
+
+**El procedimiento se evaluó una sola vez.** La CV anidada tiene su propia
+desviación (0.0239) estimada con cinco números. No es una medición precisa:
+es suficiente para descartar una mejora grande, no para descartar una pequeña.
+
+**La rejilla no se amplió.** El diagnóstico de 8.4 identifica el problema pero
+no lo corrige. Hacerlo honestamente exigiría una nueva evaluación anidada, y
+cualquier mejora encontrada después de haber visto estos resultados cargaría
+con el sesgo que toda esta sección trata de evitar.
+
+**La mejora de calibración no se verificó pliegue a pliegue.** Se midió sobre
+el conjunto completo de predicciones fuera de muestra. Su magnitud (−40 %)
+hace improbable que sea azar, pero no se acompaña de una medida de
+incertidumbre.
+
+**Nada de esto estima el desempeño final.** La cifra que se reporta como
+desempeño esperado del procedimiento es la de la CV anidada —**0.8783 ±
+0.0239**— y nunca `best_score_`. La Parte 16 abrirá el conjunto de prueba una
+sola vez, y la distancia entre lo que diga y ese 0.8783 será la medida última
+de cuánto optimismo quedaba.
